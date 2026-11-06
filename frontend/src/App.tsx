@@ -122,6 +122,7 @@ function App() {
   const [setupToken, setSetupToken] = useState("");
   const [mfaSecret, setMfaSecret] = useState("");
   const [setupEmail, setSetupEmail] = useState("");
+  const [setupOrganizationSlug, setSetupOrganizationSlug] = useState("");
 
   const beginAction = () => {
     if (actionInFlightRef.current) return false;
@@ -238,6 +239,7 @@ function App() {
       setSetupToken(result.setup_token);
       setMfaSecret(result.mfa_secret);
       setSetupEmail(String(form.get("email")));
+      setSetupOrganizationSlug(result.organization_slug);
       setStage("mfa-setup");
     } catch (error) {
       setRegisterError(error instanceof Error ? error.message : "Registration failed");
@@ -328,6 +330,7 @@ function App() {
         busy={busy}
         error={stage === "sign-in" ? loginError : registerError}
         setupEmail={setupEmail}
+        setupOrganizationSlug={setupOrganizationSlug}
         mfaSecret={mfaSecret}
         onSignIn={handleSignIn}
         onRegister={handleRegister}
@@ -456,6 +459,7 @@ function AuthScreen({
   busy,
   error,
   setupEmail,
+  setupOrganizationSlug,
   mfaSecret,
   onSignIn,
   onRegister,
@@ -467,6 +471,7 @@ function AuthScreen({
   busy: boolean;
   error: string;
   setupEmail: string;
+  setupOrganizationSlug: string;
   mfaSecret: string;
   onSignIn: (event: FormEvent<HTMLFormElement>) => void;
   onRegister: (event: FormEvent<HTMLFormElement>) => void;
@@ -516,6 +521,7 @@ function AuthScreen({
           {stage === "mfa-setup" && <>
             <span className="eyebrow">ADMIN MFA SETUP</span><h2>Secure your admin access</h2><p className="auth-subtitle">Add <strong>{setupEmail}</strong> to an authenticator app, then enter the current code below.</p>
             {error && <div className="form-error">{error}</div>}
+            <div className="secret-card"><span>Organization slug for future sign in</span><code>{setupOrganizationSlug}</code><small>Save this slug with your login details.</small></div>
             <div className="secret-card"><span>Authenticator setup key</span><code>{mfaSecret}</code><small>Keep this key private. It will not be shown again after enrollment.</small></div>
             <form className="form-stack" onSubmit={onConfirmMfa}>
               <Field label="6-digit authenticator code" name="mfa_code" inputMode="numeric" maxLength={8} autoComplete="one-time-code" required />

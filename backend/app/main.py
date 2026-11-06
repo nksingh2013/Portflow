@@ -1,3 +1,4 @@
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -73,6 +74,7 @@ from app.schemas import (
     MovementInput,
     MovementOut,
 )
+
 from app.security import create_token, decode_token, hash_password, verify_password
 from app.services import (
     audit,
@@ -84,6 +86,8 @@ from app.services import (
     utc_now,
     yard_suggestions,
 )
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PortFlow API",
@@ -200,50 +204,78 @@ def register(payload: RegisterInput, db: db_dep):
     email = str(payload.email).lower()
     if db.scalar(select(User.id).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
-    try:
+    requested_slug = payload.organization_slug.strip().lower()
+    organization_slug = requested_slug
+    secret = pyotp.random_base32()
+    password_hash = hash_password(payload.password)
+
+    for attempt in range(4):
         user_id, organization_id, terminal_id, membership_id = uuid4(), uuid4(), uuid4(), uuid4()
-        set_identity_context(db, user_id)
-        set_tenant_context(db, organization_id)
-        organization = Organization(
-            id=organization_id,
-            slug=payload.organization_slug,
-            name=payload.organization_name,
-            legal_name=payload.organization_name,
-            timezone="Asia/Kolkata",
-            currency="INR",
-            is_demo=False,
-        )
-        terminal = Terminal(
-            id=terminal_id,
-            organization_id=organization_id,
-            code=payload.terminal_code.upper(),
-            name=payload.terminal_name,
-            timezone="Asia/Kolkata",
-        )
-        secret = pyotp.random_base32()
-        user = User(
-            id=user_id,
-            email=email,
-            display_name=payload.admin_name,
-            password_hash=hash_password(payload.password),
-            mfa_secret=secret,
-            mfa_enabled=False,
-        )
-        membership = Membership(
-            id=membership_id,
-            user_id=user_id,
-            organization_id=organization_id,
-            organization_slug=payload.organization_slug,
-            role="organization_admin",
-        )
-        db.add_all([organization, terminal, user, membership])
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="Organization slug, terminal code, or account email is already in use") from exc
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            set_identity_context(db, user_id)
+            set_tenant_context(db, organization_id)
+            organization = Organization(
+                id=organization_id,
+                slug=organization_slug,
+                name=payload.organization_name,
+                legal_name=payload.organization_name,
+                timezone="Asia/Kolkata",
+                currency="INR",
+                is_demo=False,
+            )
+            terminal = Terminal(
+                id=terminal_id,
+                organization_id=organization_id,
+                code=payload.terminal_code.upper(),
+                name=payload.terminal_name,
+                timezone="Asia/Kolkata",
+            )
+            user = User(
+                id=user_id,
+                email=email,
+                display_name=payload.admin_name,
+                password_hash=password_hash,
+                mfa_secret=secret,
+                mfa_enabled=False,
+            )
+            membership = Membership(
+                id=membership_id,
+                user_id=user_id,
+                organization_id=organization_id,
+                organization_slug=organization_slug,
+                role="organization_admin",
+            )
+            db.add_all([organization, terminal, user, membership])
+            db.commit()
+            break
+        except IntegrityError as exc:
+            db.rollback()
+            constraint = _integrity_constraint_name(exc)
+            conflict = _registration_conflict(constraint)
+            logger.warning("Organization registration rejected by database constraint: %s", constraint or "unknown")
+
+            # Organization slugs are globally unique. Automatically retry with a
+            # short suffix so a taken slug cannot block a new college demo workspace.
+            if conflict == "organization_slug" and attempt < 3:
+                slug_prefix = requested_slug[:73].rstrip("-")
+                organization_slug = f"{slug_prefix}-{secrets.token_hex(3)}"
+                continue
+
+            if conflict == "account_email":
+                detail = "An account with this email already exists. Sign in with that account or use a different email."
+            elif conflict == "terminal_code":
+                detail = "That terminal code is already in use. Choose a different terminal code."
+            elif conflict == "organization_slug":
+                detail = "We could not find an unused organization slug. Please try again."
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Workspace setup hit an unexpected database conflict. Please try again; if it repeats, contact support.",
+                ) from exc
+            raise HTTPException(status_code=409, detail=detail) from exc
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     setup_token = create_token(
         user_id,
@@ -257,8 +289,36 @@ def register(payload: RegisterInput, db: db_dep):
         "setup_token": setup_token,
         "mfa_secret": secret,
         "mfa_uri": pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="PortFlow"),
+        "organization_slug": organization_slug,
         "message": "Add this account to an authenticator app, then confirm the current code.",
     }
+
+
+def _integrity_constraint_name(exc: IntegrityError) -> str:
+    diagnostic = getattr(exc.orig, "diag", None)
+    constraint = getattr(diagnostic, "constraint_name", None)
+    if constraint:
+        return str(constraint).lower()
+    # Some drivers (including SQLite in tests) do not expose constraint
+    # metadata. Classify their message without logging any submitted values.
+    message = str(exc.orig).lower()
+    if "organizations.slug" in message or "ix_organizations_slug" in message:
+        return "organizations_slug"
+    if "terminals.code" in message or "uq_terminal_org_code" in message:
+        return "terminals_code"
+    if "users.email" in message or "ix_users_email" in message:
+        return "users_email"
+    return "unknown"
+
+
+def _registration_conflict(constraint: str) -> str | None:
+    if "organization" in constraint and "slug" in constraint or "organizations.slug" in constraint:
+        return "organization_slug"
+    if "terminal" in constraint and "code" in constraint or "terminals.code" in constraint:
+        return "terminal_code"
+    if "user" in constraint and "email" in constraint or "users.email" in constraint:
+        return "account_email"
+    return None
 
 
 @app.post("/api/v1/auth/mfa/confirm", response_model=TokenResponse, tags=["identity"])

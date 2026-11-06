@@ -223,7 +223,7 @@ export async function register(payload: {
     const result = await response.json().catch(() => null);
     throw new Error(result?.detail ?? `Registration failed (${response.status})`);
   }
-  return (await response.json()) as { setup_token: string; mfa_secret: string; mfa_uri: string; message: string };
+  return (await response.json()) as { setup_token: string; mfa_secret: string; mfa_uri: string; organization_slug: string; message: string };
 }
 
 export function sessionFromToken(token: TokenResponse): Session {
