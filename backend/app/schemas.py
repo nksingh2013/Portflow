@@ -86,6 +86,12 @@ class CustomerOut(ORMModel):
     terminal_id: UUID
 
 
+class CustomerPortalUserCreate(BaseModel):
+    display_name: str = Field(min_length=2, max_length=180)
+    email: EmailStr
+    password: str = Field(min_length=12, max_length=128)
+
+
 class ContainerCreate(BaseModel):
     terminal_id: UUID
     customer_id: UUID

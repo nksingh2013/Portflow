@@ -51,7 +51,7 @@ import {
 import { demoTerminal, demoTerminalId, isPresentationDemo } from "./demo";
 
 type Screen = "overview" | "containers" | "gate" | "yard" | "vessels" | "billing" | "customers" | "portal" | "settings";
-type ModalType = "walkin" | "visit" | "appointment" | "vessel" | "tariff" | "terminal" | "container" | "customer" | "receive" | "release" | "allocate" | null;
+type ModalType = "walkin" | "visit" | "appointment" | "vessel" | "tariff" | "terminal" | "container" | "customer" | "customer-login" | "receive" | "release" | "allocate" | null;
 type Notice = { tone: "success" | "error" | "info"; text: string };
 type LoginStage = "sign-in" | "register" | "mfa-setup";
 
@@ -121,6 +121,7 @@ function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [modal, setModal] = useState<ModalType>(null);
   const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [yardChoices, setYardChoices] = useState<{ slot_id: string; code: string; score: number; reason: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const actionInFlightRef = useRef(false);
@@ -299,6 +300,7 @@ function App() {
       setNotice({ tone: "success", text: success });
       setModal(null);
       setSelectedVisit(null);
+      setSelectedCustomer(null);
       if (session && terminalId) {
         const refreshed = await loadWorkspace(session, terminalId);
         if (!refreshed) {
@@ -421,7 +423,7 @@ function App() {
           {selectedScreen === "yard" && !customerMode && <YardView slots={slots} visits={filteredVisits} onAllocate={openAllocation} />}
           {selectedScreen === "vessels" && !customerMode && <VesselsView vessels={vessels} visits={visitRows} onAdd={() => openModal("vessel")} />}
           {selectedScreen === "billing" && (customerMode ? <CustomerBilling invoices={portalInvoices} /> : <BillingView tariffs={tariffs} invoices={invoices} visits={visits} onNewTariff={() => openModal("tariff")} onPublish={(id) => void runAction(() => post(`/tariffs/versions/${id}/publish`, {}), "Tariff version published and locked.")} onGenerate={(id) => void runAction(() => post(`/invoices/generate/${id}`, {}), "Operational invoice generated.")} />)}
-          {selectedScreen === "customers" && !customerMode && <CustomersView customers={customers} visitRows={visitRows} onAdd={() => openModal("customer")} />}
+          {selectedScreen === "customers" && !customerMode && <CustomersView customers={customers} visitRows={visitRows} canManagePortal={session.role === "organization_admin"} onAdd={() => openModal("customer")} onCreatePortalLogin={(customer) => { setSelectedCustomer(customer); openModal("customer-login"); }} />}
           {selectedScreen === "portal" && customerMode && <PortalView rows={portalContainers} invoices={portalInvoices} />}
           {selectedScreen === "settings" && !customerMode && <SettingsView terminals={terminals} onAdd={() => openModal("terminal")} />}
           <footer className="page-footer"><span>PortFlow Terminal Operations</span><span><ShieldCheck size={13} /> Tenant context verified · {activeTerminal?.timezone ?? "Asia/Kolkata"}</span><a href="/api/docs" target="_blank" rel="noreferrer">API reference ↗</a></footer>
@@ -437,8 +439,9 @@ function App() {
         vessels={vessels}
         selectedTerminal={terminalId}
         selectedVisit={selectedVisit}
+        selectedCustomer={selectedCustomer}
         yardChoices={yardChoices}
-        onClose={() => { if (!busy) { setModal(null); setSelectedVisit(null); } }}
+        onClose={() => { if (!busy) { setModal(null); setSelectedVisit(null); setSelectedCustomer(null); } }}
         onSubmit={(type, form) => {
           const getValue = (name: string) => String(form.get(name) ?? "");
           const terminal = getValue("terminal_id") || terminalId;
@@ -470,6 +473,7 @@ function App() {
           if (type === "tariff") return runAction(() => post("/tariffs", { terminal_id: terminal, name: getValue("name"), free_storage_days: Number(getValue("free_storage_days")), daily_rate: Number(getValue("daily_rate")), effective_from: new Date(getValue("effective_from")).toISOString() }), "Draft tariff version created. Publish it to make it active.");
           if (type === "terminal") return runAction(() => post("/terminals", { code: getValue("code").toUpperCase(), name: getValue("name"), timezone: getValue("timezone"), address: getValue("address") }), "Terminal added to the organization.");
           if (type === "customer") return runAction(() => post(`/customers?terminal_id=${terminal}`, { code: getValue("code").toUpperCase(), name: getValue("name"), email: getValue("email") || null }), "Customer account added to this terminal.");
+          if (type === "customer-login" && selectedCustomer) return runAction(() => post(`/customers/${selectedCustomer.id}/portal-users`, { display_name: getValue("display_name"), email: getValue("email"), password: getValue("password") }), `Customer portal login created for ${getValue("email")}. Email delivery is not configured, so share the password directly. Sign-in organization: ${session.organizationSlug}.`);
           if (type === "container") return runAction(() => post("/containers", { terminal_id: terminal, customer_id: customer, container_number: getValue("container_number").toUpperCase(), size_feet: Number(getValue("size_feet")), category: getValue("category"), is_empty: form.get("is_empty") === "on", seal_number: getValue("seal_number"), cargo_description: getValue("cargo_description") }), "Container registered.");
           if (type === "receive" && selectedVisit) return runAction(() => post(`/visits/${selectedVisit.id}/custody/receive`, { mode: getValue("mode"), idempotency_key: idempotency, external_reference: getValue("external_reference") }), "Custody receipt recorded.");
           if (type === "release" && selectedVisit) return runAction(() => post(`/visits/${selectedVisit.id}/custody/release`, { mode: getValue("mode"), idempotency_key: idempotency, external_reference: getValue("external_reference") }), "Custody released. Any applicable operational invoice is available in Billing.");
@@ -663,14 +667,14 @@ function BillingView({ tariffs, invoices, visits, onNewTariff, onPublish, onGene
   </>;
 }
 
-function CustomersView({ customers, visitRows, onAdd }: { customers: Customer[]; visitRows: { visit: Visit; container?: Container; customer?: Customer }[]; onAdd: () => void }) {
+function CustomersView({ customers, visitRows, canManagePortal, onAdd, onCreatePortalLogin }: { customers: Customer[]; visitRows: { visit: Visit; container?: Container; customer?: Customer }[]; canManagePortal: boolean; onAdd: () => void; onCreatePortalLogin: (customer: Customer) => void }) {
   return <>
     <PageTitle eyebrow="MANAGEMENT / CUSTOMER ACCOUNTS" title="Customer visibility" subtitle="Customer organizations see only their assigned container visits and operational invoices." actions={<><span className="readonly-pill"><ShieldCheck size={14} /> Tenant and customer scoped</span><button className="primary-button" onClick={onAdd}><Plus size={16} /> Add customer</button></>} />
     <div className="customer-grid">{customers.map((customer) => {
       const customerVisits = visitRows.filter((row) => row.customer?.id === customer.id);
-      return <section className="panel customer-card" key={customer.id}><div className="customer-card-top"><div className="customer-avatar">{initials(customer.name)}</div><Badge tone="green">Active</Badge></div><h2>{customer.name}</h2><p>{customer.code}</p><div className="customer-stats"><div><strong>{customerVisits.length}</strong><span>Visits</span></div><div><strong>{customerVisits.filter(({ visit }) => visit.status === "in_terminal").length}</strong><span>In custody</span></div><div><strong>{customerVisits.filter(({ visit }) => visit.status === "released").length}</strong><span>Released</span></div></div><div className="customer-email">{customer.email || "No portal email assigned"}</div></section>;
+      return <section className="panel customer-card" key={customer.id}><div className="customer-card-top"><div className="customer-avatar">{initials(customer.name)}</div><Badge tone="green">Active</Badge></div><h2>{customer.name}</h2><p>{customer.code}</p><div className="customer-stats"><div><strong>{customerVisits.length}</strong><span>Visits</span></div><div><strong>{customerVisits.filter(({ visit }) => visit.status === "in_terminal").length}</strong><span>In custody</span></div><div><strong>{customerVisits.filter(({ visit }) => visit.status === "released").length}</strong><span>Released</span></div></div><div className="customer-email">{customer.email || "No portal email assigned"}</div>{canManagePortal && <button className="secondary-button button-small" onClick={() => onCreatePortalLogin(customer)}>Create portal login <ArrowUpRight size={14} /></button>}</section>;
     })}{!customers.length && <EmptyCard title="No customer accounts" detail="Add customers through the API or load the clearly labeled demo seed." />}</div>
-    <div className="integration-note"><Users size={16} /><span><strong>Portal accounts.</strong> Customer assignments are scoped to one customer record. Invite and password-reset email delivery will require an email provider integration.</span></div>
+    <div className="integration-note"><Users size={16} /><span><strong>Portal accounts.</strong> An organization admin can create a customer login. Automated email invitations and password resets are not configured, so share the initial password directly.</span></div>
   </>;
 }
 
@@ -711,7 +715,7 @@ function EmptyCard({ title, detail, action }: { title: string; detail: string; a
   return <div className="empty-card"><div className="empty-icon"><Boxes size={20} /></div><strong>{title}</strong><span>{detail}</span>{action}</div>;
 }
 
-function WorkspaceModal({ type, busy, terminals, customers, containers, vessels, selectedTerminal, selectedVisit, yardChoices, onClose, onSubmit }: {
+function WorkspaceModal({ type, busy, terminals, customers, containers, vessels, selectedTerminal, selectedVisit, selectedCustomer, yardChoices, onClose, onSubmit }: {
   type: Exclude<ModalType, null>;
   busy: boolean;
   terminals: Terminal[];
@@ -720,13 +724,14 @@ function WorkspaceModal({ type, busy, terminals, customers, containers, vessels,
   vessels: VesselCall[];
   selectedTerminal: string;
   selectedVisit: Visit | null;
+  selectedCustomer: Customer | null;
   yardChoices: { slot_id: string; code: string; score: number; reason: string }[];
   onClose: () => void;
   onSubmit: (type: Exclude<ModalType, null>, form: FormData) => Promise<void>;
 }) {
   const [containerSearch, setContainerSearch] = useState("");
   const [selectedContainerId, setSelectedContainerId] = useState("");
-  const titles: Record<Exclude<ModalType, null>, string> = { walkin: "Register a walk-in", visit: "Create first visit", appointment: "Schedule a gate visit", vessel: "Add vessel call", tariff: "Create tariff version", terminal: "Add terminal", container: "Register container", customer: "Add customer account", receive: "Record custody receipt", release: "Release custody", allocate: "Allocate yard slot" };
+  const titles: Record<Exclude<ModalType, null>, string> = { walkin: "Register a walk-in", visit: "Create first visit", appointment: "Schedule a gate visit", vessel: "Add vessel call", tariff: "Create tariff version", terminal: "Add terminal", container: "Register container", customer: "Add customer account", "customer-login": "Create customer portal login", receive: "Record custody receipt", release: "Release custody", allocate: "Allocate yard slot" };
   const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void onSubmit(type, new FormData(event.currentTarget)); };
   const terminalField = <div className="field"><label htmlFor="terminal_id">Terminal</label><select id="terminal_id" name="terminal_id" defaultValue={selectedTerminal} required>{terminals.map((terminal) => <option key={terminal.id} value={terminal.id}>{terminal.name}</option>)}</select></div>;
   const customerField = <div className="field"><label htmlFor="customer_id">Customer</label><select id="customer_id" name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></div>;
@@ -739,7 +744,7 @@ function WorkspaceModal({ type, busy, terminals, customers, containers, vessels,
   const categoryField = <div className="field"><label htmlFor="category">Container category</label><select name="category" id="category" defaultValue="DRY"><option>DRY</option><option>REEFER</option><option>HAZARDOUS</option><option>OPEN_TOP</option><option>FLAT_RACK</option></select></div>;
   const sizeField = <div className="field"><label htmlFor="size_feet">Size</label><select name="size_feet" id="size_feet" defaultValue="40"><option value="20">20 ft</option><option value="40">40 ft</option><option value="45">45 ft</option></select></div>;
   const checkbox = (name: string, label: string) => <label className="checkbox-field"><input type="checkbox" name={name} /><span>{label}</span></label>;
-  const footer = <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <><span className="button-spinner" /> Saving…</> : <>Save record <ArrowUpRight size={15} /></>}</button></div>;
+  const footer = <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <><span className="button-spinner" /> Saving…</> : <>{type === "customer-login" ? "Create login" : "Save record"} <ArrowUpRight size={15} /></>}</button></div>;
   return <ModalFrame title={titles[type]} onClose={onClose}>
     {type === "allocate" ? <div className="yard-choice-list">{yardChoices.map((choice) => <form key={choice.slot_id} onSubmit={(event) => { event.preventDefault(); const data = new FormData(); data.set("slot_id", choice.slot_id); void onSubmit("allocate", data); }}><div><strong>{choice.code}</strong><span>{choice.reason}</span></div><Badge tone="green">Score {choice.score}</Badge><button className="secondary-button button-small" disabled={busy}>Assign <ArrowUpRight size={13} /></button></form>)}{!yardChoices.length && <div className="empty-inline"><strong>No clear compatible slot</strong><span>Clear a slot or review the category setup before allocating {selectedVisit?.visit_reference}.</span></div>}</div> : (
       <form className="modal-form" onSubmit={submit}>
@@ -763,6 +768,7 @@ function WorkspaceModal({ type, busy, terminals, customers, containers, vessels,
         {type === "tariff" && <><Field label="Tariff name" name="name" placeholder="Standard storage · import" required /><div className="form-row"><Field label="Free calendar days" name="free_storage_days" type="number" placeholder="3" required minLength={0} /><Field label="Daily rate (INR)" name="daily_rate" type="number" placeholder="850.00" required minLength={0} /></div><Field label="Effective from" name="effective_from" type="datetime-local" required /><div className="form-hint"><ShieldCheck size={14} /> Publishing locks this version. Invoice snapshots preserve its rate and calculation.</div></>}
         {type === "terminal" && <><Field label="Terminal code" name="code" placeholder="MUM-02" required /><Field label="Terminal name" name="name" placeholder="North Yard Annex" required /><div className="field"><label htmlFor="timezone">Timezone</label><select name="timezone" id="timezone" defaultValue="Asia/Kolkata"><option value="Asia/Kolkata">Asia/Kolkata (IST)</option><option value="UTC">UTC</option></select></div><Field label="Address" name="address" placeholder="Optional terminal address" /></>}
         {type === "customer" && <><Field label="Customer code" name="code" placeholder="WSL-001" required /><Field label="Customer organization" name="name" placeholder="Western Star Logistics" required /><Field label="Portal email (optional)" name="email" type="email" placeholder="operations@customer.in" /></>}
+        {type === "customer-login" && <><div className="form-hint"><ShieldCheck size={14} /> This sign-in will see only {selectedCustomer?.name ?? "this customer"}’s containers and invoices. Use the original website link and your organization slug to sign in.</div><Field label="Customer contact name" name="display_name" placeholder="Customer user" required autoComplete="name" /><Field label="Login email" name="email" type="email" placeholder={selectedCustomer?.email || "name@company.com"} required autoComplete="username" /><Field label="Password · 12 characters minimum" name="password" type="password" required minLength={12} autoComplete="new-password" /><div className="form-hint">Email invitations and password reset are not configured. Share the email and password privately with the customer.</div></>}
         {(type === "receive" || type === "release") && <><div className="modal-context"><span className="container-glyph"><ContainerIcon size={14} /></span><div><strong>{selectedVisit?.visit_reference}</strong><span>Container visit · {selectedVisit?.status.replaceAll("_", " ")}</span></div></div><div className="field"><label htmlFor="mode">Custody handover mode</label><select id="mode" name="mode" defaultValue={type === "receive" ? "truck" : "truck_gate_out"}>{type === "receive" ? <><option value="truck">Truck gate-in</option><option value="rail">Rail receipt</option><option value="vessel">Vessel discharge</option></> : <><option value="truck_gate_out">Truck gate-out</option><option value="rail_dispatch">Rail dispatch</option><option value="vessel_loading">Vessel loading / operational handover</option></>}</select></div><Field label="External reference (optional)" name="external_reference" placeholder="Gate ticket, manifest or dispatch reference" /><div className="form-hint"><ShieldCheck size={14} /> This event is appended to the custody record with an idempotency key.</div></>}
         {footer}
       </form>

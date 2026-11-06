@@ -46,6 +46,7 @@ from app.schemas import (
     CustodyReleaseInput,
     CustomerCreate,
     CustomerOut,
+    CustomerPortalUserCreate,
     GateAppointmentCreate,
     GateAppointmentOut,
     InvoiceDetailOut,
@@ -510,6 +511,69 @@ def create_customer(payload: CustomerCreate, terminal_id: UUID, principal: Princ
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="A customer with that code already exists") from exc
+
+
+@app.post("/api/v1/customers/{customer_id}/portal-users", status_code=201, tags=["customers"])
+def create_customer_portal_user(
+    customer_id: UUID,
+    payload: CustomerPortalUserCreate,
+    principal: Principal = Depends(require_roles("organization_admin")),
+    db: Session = Depends(get_db),
+):
+    """Create a customer-scoped sign-in; credentials are handed to the customer by the admin."""
+    customer = db.scalar(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.organization_id == principal.organization_id,
+        )
+    )
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer account not found")
+    if not customer.is_active:
+        raise HTTPException(status_code=409, detail="This customer account is inactive")
+
+    email = str(payload.email).strip().lower()
+    if db.scalar(select(User.id).where(User.email == email)):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    user = User(
+        email=email,
+        display_name=payload.display_name.strip(),
+        password_hash=hash_password(payload.password),
+        is_active=True,
+        mfa_enabled=False,
+    )
+    db.add(user)
+    try:
+        # Membership RLS permits only the authenticated user. Switch the
+        # transaction-local identity to the new user before inserting it.
+        db.flush()
+        set_identity_context(db, user.id)
+        membership = Membership(
+            user_id=user.id,
+            organization_id=principal.organization_id,
+            organization_slug=principal.membership.organization_slug,
+            terminal_id=customer.terminal_id,
+            customer_id=customer.id,
+            role="customer",
+            is_active=True,
+        )
+        db.add(membership)
+        db.flush()
+        audit(db, principal, "customer.portal_user_created", "customer", customer.id, customer.terminal_id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with this email already exists") from exc
+
+    return {
+        "id": str(user.id),
+        "display_name": user.display_name,
+        "email": user.email,
+        "role": "customer",
+        "organization_slug": membership.organization_slug,
+        "customer_name": customer.name,
+    }
 
 
 @app.get("/api/v1/containers", response_model=list[ContainerOut], tags=["containers"])
