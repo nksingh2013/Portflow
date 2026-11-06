@@ -1,0 +1,51 @@
+# =============================================================================
+# PortFlow – backend/.dockerignore
+# Excludes Windows-locked / cache / dev-only paths from the Docker build
+# context so the daemon never tries to read them.
+# =============================================================================
+
+# ----- Python cache / bytecode -----------------------------------------------
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# ----- Test tooling ----------------------------------------------------------
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+
+# ----- Linter / type-checker caches -----------------------------------------
+.mypy_cache/
+.ruff_cache/
+
+# ----- Local virtual environment (deps are installed inside the image) -------
+.venv/
+venv/
+env/
+
+# ----- OS artefacts ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ----- Editor / IDE ----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ----- Git -------------------------------------------------------------------
+.git/
+.gitignore
+
+# ----- Secrets (never bake into the image) -----------------------------------
+.env
+.env.*
+!.env.example
+
+# =============================================================================
+# Everything else – app/, alembic/ (including alembic/versions/), alembic.ini,
+# requirements.txt, and the Dockerfile itself – is intentionally NOT excluded
+# so the image is fully self-contained and migrations run correctly.
+# =============================================================================

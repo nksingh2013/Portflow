@@ -1,0 +1,45 @@
+# =============================================================================
+# PortFlow – frontend/.dockerignore
+# Excludes host-side artefacts from the Docker build context so the daemon
+# never tries to send them to the builder (and pnpm never sees a stale
+# node_modules from the developer's machine).
+# =============================================================================
+
+# ----- Node / pnpm -----------------------------------------------------------
+# CRITICAL: a host node_modules causes a virtual-store path mismatch.
+# pnpm then tries to wipe and re-create it; in a non-TTY Docker build that
+# aborts with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
+node_modules/
+
+# ----- Build output ----------------------------------------------------------
+# The multi-stage build produces its own /app/dist inside the builder image.
+# Sending the host dist/ just wastes context transfer time.
+dist/
+
+# ----- TypeScript incremental build cache ------------------------------------
+*.tsbuildinfo
+
+# ----- OS artefacts ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ----- Editor / IDE ----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ----- Git -------------------------------------------------------------------
+.git/
+.gitignore
+
+# ----- Secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# =============================================================================
+# Everything else – src/, index.html, vite.config.ts, tsconfig*.json,
+# package.json, pnpm-lock.yaml, pnpm-workspace.yaml, nginx.conf –
+# is intentionally NOT excluded so the build stage has what it needs.
+# =============================================================================
