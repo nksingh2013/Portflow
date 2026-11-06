@@ -245,7 +245,13 @@ def register(payload: RegisterInput, db: db_dep):
                 organization_slug=organization_slug,
                 role="organization_admin",
             )
-            db.add_all([organization, terminal, user, membership])
+            # These models do not declare ORM relationships, so make their
+            # foreign-key order explicit for PostgreSQL's signup transaction.
+            db.add(organization)
+            db.flush()
+            db.add_all([terminal, user])
+            db.flush()
+            db.add(membership)
             db.commit()
             break
         except IntegrityError as exc:
