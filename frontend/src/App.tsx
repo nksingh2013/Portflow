@@ -486,7 +486,7 @@ function AuthScreen({
       <div className="auth-panel">
         <div className="auth-panel-top"><span className="secure-label"><ShieldCheck size={14} /> SECURE WORKSPACE</span><a href="/api/docs" target="_blank" rel="noreferrer">API docs ↗</a></div>
         <div className="auth-form-wrap">
-          {demoMode && <div className="auth-demo-tag"><span className="demo-pulse" /> DEMO ENVIRONMENT · Seeded sample data is labeled</div>}
+          {demoMode && <div className="auth-demo-tag"><span className="demo-pulse" /> DEMO ENVIRONMENT · No live port, email, or payment integrations</div>}
           {stage === "sign-in" && <>
             <span className="eyebrow">WELCOME TO PORTFLOW</span><h2>Sign in to your terminal</h2><p className="auth-subtitle">Use your organization account to open the operations workspace.</p>
             {error && <div className="form-error">{error}</div>}
