@@ -38,7 +38,10 @@ TENANT_TABLES = (
 
 def upgrade() -> None:
     bind = op.get_bind()
-    Base.metadata.create_all(bind=bind)
+    Base.metadata.create_all(
+        bind=bind,
+        tables=[table for table in Base.metadata.sorted_tables if table.name != "customer_portal_requests"],
+    )
     if bind.dialect.name != "postgresql":
         return
 

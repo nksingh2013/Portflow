@@ -93,6 +93,39 @@ class Customer(Base):
     created_at: Mapped[datetime] = created_at_column()
 
 
+class CustomerPortalRequest(Base):
+    __tablename__ = "customer_portal_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["customer_id", "organization_id", "terminal_id"],
+            ["customers.id", "customers.organization_id", "customers.terminal_id"],
+            name="fk_portal_request_customer_tenant",
+        ),
+        CheckConstraint("status in ('pending','approved','rejected')", name="ck_portal_request_status"),
+        Index(
+            "uq_pending_portal_request_org_email",
+            "organization_id",
+            "email",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+        Index("ix_portal_request_org_status_created", "organization_id", "status", "created_at"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    company_name: Mapped[str] = mapped_column(String(180))
+    contact_name: Mapped[str] = mapped_column(String(180))
+    email: Mapped[str] = mapped_column(String(320))
+    message: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    terminal_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    reviewed_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = created_at_column()
+
+
 class Membership(Base):
     """Identity mapping queried only after a signed token identifies its user."""
     __tablename__ = "memberships"

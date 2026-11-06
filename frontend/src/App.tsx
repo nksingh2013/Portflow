@@ -32,6 +32,7 @@ import {
   type Appointment,
   type Container,
   type Customer,
+  type CustomerPortalAccessRequest,
   type DashboardSummary,
   type Invoice,
   type Session,
@@ -44,6 +45,7 @@ import {
   login,
   post,
   register,
+  requestCustomerAccess,
   sessionFromToken,
   setAccessToken,
   uploadlessMfaConfirm,
@@ -51,9 +53,9 @@ import {
 import { demoTerminal, demoTerminalId, isPresentationDemo } from "./demo";
 
 type Screen = "overview" | "containers" | "gate" | "yard" | "vessels" | "billing" | "customers" | "portal" | "settings";
-type ModalType = "walkin" | "visit" | "appointment" | "vessel" | "tariff" | "terminal" | "container" | "customer" | "customer-login" | "receive" | "release" | "allocate" | null;
+type ModalType = "walkin" | "visit" | "appointment" | "vessel" | "tariff" | "terminal" | "container" | "customer" | "customer-login" | "portal-request" | "receive" | "release" | "allocate" | null;
 type Notice = { tone: "success" | "error" | "info"; text: string };
-type LoginStage = "sign-in" | "register" | "mfa-setup";
+type LoginStage = "sign-in" | "register" | "customer-request" | "customer-request-sent" | "mfa-setup";
 
 const navItems: { id: Screen; label: string; icon: LucideIcon; group: string }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard, group: "WORKSPACE" },
@@ -111,6 +113,7 @@ function App() {
   const [containers, setContainers] = useState<Container[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [portalRequests, setPortalRequests] = useState<CustomerPortalAccessRequest[]>([]);
   const [vessels, setVessels] = useState<VesselCall[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [slots, setSlots] = useState<YardSlot[]>([]);
@@ -122,6 +125,7 @@ function App() {
   const [modal, setModal] = useState<ModalType>(null);
   const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [selectedPortalRequest, setSelectedPortalRequest] = useState<CustomerPortalAccessRequest | null>(null);
   const [yardChoices, setYardChoices] = useState<{ slot_id: string; code: string; score: number; reason: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const actionInFlightRef = useRef(false);
@@ -200,6 +204,25 @@ function App() {
     if (session && terminalId) void loadWorkspace(session, terminalId);
   }, [session, terminalId, loadWorkspace]);
 
+  useEffect(() => {
+    if (!session || session.role !== "organization_admin") {
+      setPortalRequests([]);
+      return;
+    }
+    let cancelled = false;
+    const refreshRequests = async () => {
+      try {
+        const requests = await get<CustomerPortalAccessRequest[]>("/portal-access-requests");
+        if (!cancelled) setPortalRequests(requests);
+      } catch {
+        if (!cancelled) setPortalRequests([]);
+      }
+    };
+    void refreshRequests();
+    const timer = window.setInterval(() => void refreshRequests(), 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [session?.role, session?.token]);
+
   const finishSignIn = async (tokenResponse: Awaited<ReturnType<typeof login>>) => {
     const next = sessionFromToken(tokenResponse);
     setAccessToken(next.token);
@@ -260,6 +283,27 @@ function App() {
     }
   };
 
+  const handleCustomerAccessRequest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!beginAction()) return;
+    const form = new FormData(event.currentTarget);
+    setRegisterError("");
+    try {
+      await requestCustomerAccess({
+        organization_slug: String(form.get("organization_slug")).trim().toLowerCase(),
+        company_name: String(form.get("company_name")).trim(),
+        contact_name: String(form.get("contact_name")).trim(),
+        email: String(form.get("email")).trim(),
+        message: String(form.get("message")).trim(),
+      });
+      setStage("customer-request-sent");
+    } catch (error) {
+      setRegisterError(error instanceof Error ? error.message : "Access request could not be sent");
+    } finally {
+      endAction();
+    }
+  };
+
   const handleMfaSetupConfirm = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!beginAction()) return;
@@ -301,6 +345,10 @@ function App() {
       setModal(null);
       setSelectedVisit(null);
       setSelectedCustomer(null);
+      setSelectedPortalRequest(null);
+      if (session?.role === "organization_admin" && selectedScreen === "customers") {
+        try { setPortalRequests(await get<CustomerPortalAccessRequest[]>("/portal-access-requests")); } catch { /* Keep the last visible request list until the next poll. */ }
+      }
       if (session && terminalId) {
         const refreshed = await loadWorkspace(session, terminalId);
         if (!refreshed) {
@@ -356,6 +404,7 @@ function App() {
         mfaSecret={mfaSecret}
         onSignIn={handleSignIn}
         onRegister={handleRegister}
+        onCustomerAccessRequest={handleCustomerAccessRequest}
         onConfirmMfa={handleMfaSetupConfirm}
         onStageChange={(next) => { setStage(next); setLoginError(""); setRegisterError(""); }}
         demoMode={meta?.demo_mode ?? false}
@@ -391,7 +440,7 @@ function App() {
         <nav className="sidebar-nav" aria-label="Main navigation">
           {nav.map((item, index) => {
             const previous = nav[index - 1];
-            return <div key={item.id}>{(!previous || previous.group !== item.group) && <div className="nav-group-label">{item.group}</div>}<button className={`nav-link ${selectedScreen === item.id ? "nav-link-active" : ""}`} onClick={() => { setScreen(item.id); setMobileMenuOpen(false); }}><item.icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.id === "gate" && summary?.expected ? <span className="nav-count">{summary.expected}</span> : null}</button></div>;
+            return <div key={item.id}>{(!previous || previous.group !== item.group) && <div className="nav-group-label">{item.group}</div>}<button className={`nav-link ${selectedScreen === item.id ? "nav-link-active" : ""}`} onClick={() => { setScreen(item.id); setMobileMenuOpen(false); }}><item.icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.id === "gate" && summary?.expected ? <span className="nav-count">{summary.expected}</span> : item.id === "customers" && portalRequests.length ? <span className="nav-count">{portalRequests.length}</span> : null}</button></div>;
           })}
         </nav>
         <div className="sidebar-bottom">
@@ -416,6 +465,7 @@ function App() {
         <div className="page-content">
           {readOnlyDemo ? <div className="demo-banner demo-readonly-banner"><span className="demo-pulse" /><strong>READ-ONLY PRESENTATION</strong><span>Fictional sample data · changes are disabled</span><a href="/?login=1">Administrator sign in</a></div> : meta?.demo_mode && <div className="demo-banner"><span className="demo-pulse" /><strong>DEMO ENVIRONMENT</strong><span>No live port, email, or payment integrations</span></div>}
           {notice && <div className={`notice notice-${notice.tone}`}><span>{notice.text}</span><button onClick={() => setNotice(null)} aria-label="Dismiss message"><X size={15} /></button></div>}
+          {session.role === "organization_admin" && portalRequests.length > 0 && selectedScreen !== "customers" && <div className="notice notice-info"><span>{portalRequests.length} customer access request{portalRequests.length === 1 ? "" : "s"} need review.</span><button className="text-button" onClick={() => setScreen("customers")}>Review requests <ArrowUpRight size={14} /></button></div>}
           {loading && <div className="loading-line"><span />Refreshing terminal data…</div>}
           {selectedScreen === "overview" && !customerMode && <OverviewView summary={summary} rows={visitRows} vessels={vessels} slots={slots} onWalkIn={() => openModal("walkin")} onAppointment={() => openModal("appointment")} onNavigate={setScreen} />}
           {selectedScreen === "containers" && !customerMode && <ContainersView rows={filteredVisits} search={search} setSearch={setSearch} onRegister={() => openModal("container")} onWalkIn={() => openModal("walkin")} onCreateFirstVisit={() => openModal("visit")} onReceive={(visit) => { setSelectedVisit(visit); openModal("receive"); }} onRelease={(visit) => { setSelectedVisit(visit); openModal("release"); }} onAllocate={openAllocation} onNavigate={setScreen} />}
@@ -423,7 +473,7 @@ function App() {
           {selectedScreen === "yard" && !customerMode && <YardView slots={slots} visits={filteredVisits} onAllocate={openAllocation} />}
           {selectedScreen === "vessels" && !customerMode && <VesselsView vessels={vessels} visits={visitRows} onAdd={() => openModal("vessel")} />}
           {selectedScreen === "billing" && (customerMode ? <CustomerBilling invoices={portalInvoices} /> : <BillingView tariffs={tariffs} invoices={invoices} visits={visits} onNewTariff={() => openModal("tariff")} onPublish={(id) => void runAction(() => post(`/tariffs/versions/${id}/publish`, {}), "Tariff version published and locked.")} onGenerate={(id) => void runAction(() => post(`/invoices/generate/${id}`, {}), "Operational invoice generated.")} />)}
-          {selectedScreen === "customers" && !customerMode && <CustomersView customers={customers} visitRows={visitRows} canManagePortal={session.role === "organization_admin"} onAdd={() => openModal("customer")} onCreatePortalLogin={(customer) => { setSelectedCustomer(customer); openModal("customer-login"); }} />}
+          {selectedScreen === "customers" && !customerMode && <CustomersView customers={customers} visitRows={visitRows} portalRequests={session.role === "organization_admin" ? portalRequests : []} canManagePortal={session.role === "organization_admin"} onAdd={() => openModal("customer")} onApproveRequest={(request) => { setSelectedPortalRequest(request); openModal("portal-request"); }} onRejectRequest={(requestId) => void runAction(() => post(`/portal-access-requests/${requestId}/reject`, {}), "Customer access request declined.")} onCreatePortalLogin={(customer) => { setSelectedCustomer(customer); openModal("customer-login"); }} />}
           {selectedScreen === "portal" && customerMode && <PortalView rows={portalContainers} invoices={portalInvoices} />}
           {selectedScreen === "settings" && !customerMode && <SettingsView terminals={terminals} onAdd={() => openModal("terminal")} />}
           <footer className="page-footer"><span>PortFlow Terminal Operations</span><span><ShieldCheck size={13} /> Tenant context verified · {activeTerminal?.timezone ?? "Asia/Kolkata"}</span><a href="/api/docs" target="_blank" rel="noreferrer">API reference ↗</a></footer>
@@ -440,8 +490,9 @@ function App() {
         selectedTerminal={terminalId}
         selectedVisit={selectedVisit}
         selectedCustomer={selectedCustomer}
+        selectedPortalRequest={selectedPortalRequest}
         yardChoices={yardChoices}
-        onClose={() => { if (!busy) { setModal(null); setSelectedVisit(null); setSelectedCustomer(null); } }}
+        onClose={() => { if (!busy) { setModal(null); setSelectedVisit(null); setSelectedCustomer(null); setSelectedPortalRequest(null); } }}
         onSubmit={(type, form) => {
           const getValue = (name: string) => String(form.get(name) ?? "");
           const terminal = getValue("terminal_id") || terminalId;
@@ -474,6 +525,7 @@ function App() {
           if (type === "terminal") return runAction(() => post("/terminals", { code: getValue("code").toUpperCase(), name: getValue("name"), timezone: getValue("timezone"), address: getValue("address") }), "Terminal added to the organization.");
           if (type === "customer") return runAction(() => post(`/customers?terminal_id=${terminal}`, { code: getValue("code").toUpperCase(), name: getValue("name"), email: getValue("email") || null }), "Customer account added to this terminal.");
           if (type === "customer-login" && selectedCustomer) return runAction(() => post(`/customers/${selectedCustomer.id}/portal-users`, { display_name: getValue("display_name"), email: getValue("email"), password: getValue("password") }), `Customer portal login created for ${getValue("email")}. Email delivery is not configured, so share the password directly. Sign-in organization: ${session.organizationSlug}.`);
+          if (type === "portal-request" && selectedPortalRequest) return runAction(() => post(`/portal-access-requests/${selectedPortalRequest.id}/approve`, { customer_id: getValue("customer_id"), password: getValue("password") }), `Access approved for ${selectedPortalRequest.email}. Share the password securely. Sign-in organization: ${session.organizationSlug}. Customers do not need an authenticator code.`);
           if (type === "container") return runAction(() => post("/containers", { terminal_id: terminal, customer_id: customer, container_number: getValue("container_number").toUpperCase(), size_feet: Number(getValue("size_feet")), category: getValue("category"), is_empty: form.get("is_empty") === "on", seal_number: getValue("seal_number"), cargo_description: getValue("cargo_description") }), "Container registered.");
           if (type === "receive" && selectedVisit) return runAction(() => post(`/visits/${selectedVisit.id}/custody/receive`, { mode: getValue("mode"), idempotency_key: idempotency, external_reference: getValue("external_reference") }), "Custody receipt recorded.");
           if (type === "release" && selectedVisit) return runAction(() => post(`/visits/${selectedVisit.id}/custody/release`, { mode: getValue("mode"), idempotency_key: idempotency, external_reference: getValue("external_reference") }), "Custody released. Any applicable operational invoice is available in Billing.");
@@ -494,6 +546,7 @@ function AuthScreen({
   mfaSecret,
   onSignIn,
   onRegister,
+  onCustomerAccessRequest,
   onConfirmMfa,
   onStageChange,
   demoMode,
@@ -506,6 +559,7 @@ function AuthScreen({
   mfaSecret: string;
   onSignIn: (event: FormEvent<HTMLFormElement>) => void;
   onRegister: (event: FormEvent<HTMLFormElement>) => void;
+  onCustomerAccessRequest: (event: FormEvent<HTMLFormElement>) => void;
   onConfirmMfa: (event: FormEvent<HTMLFormElement>) => void;
   onStageChange: (stage: LoginStage) => void;
   demoMode: boolean;
@@ -530,11 +584,13 @@ function AuthScreen({
               <Field label="Organization slug" name="organization" placeholder="your-terminal-group" autoComplete="organization" required />
               <Field label="Work email" name="email" type="email" placeholder="name@company.com" autoComplete="username" required />
               <div className="field"><label htmlFor="login-password">Password</label><div className="password-wrap"><input id="login-password" name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" required /><button type="button" className="show-password" onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Hide" : "Show"}</button></div></div>
-              <Field label="Authenticator code" name="mfa" placeholder="6-digit code" inputMode="numeric" maxLength={8} />
+              <Field label="Authenticator code · admins only" name="mfa" placeholder="6-digit code" inputMode="numeric" maxLength={8} />
+              <div className="form-hint">Customer accounts leave this blank; authenticator is required only for administrators.</div>
               <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Signing in…</> : <>Continue <ArrowUpRight size={17} /></>}</button>
             </form>
             {demoMode && <a className="secondary-button demo-preview-link" href="/?demo=1">Open the read-only sample workspace <ArrowUpRight size={15} /></a>}
             <button className="provider-button" disabled title="Google OAuth is not configured"><span className="google-mark">G</span> Continue with Google <span className="provider-note">Not configured</span></button>
+            <p className="auth-switch">Customer access? <button onClick={() => onStageChange("customer-request")}>Request a login</button></p>
             <p className="auth-switch">New to PortFlow? <button onClick={() => onStageChange("register")}>Set up an organization</button></p>
           </>}
           {stage === "register" && <>
@@ -549,6 +605,22 @@ function AuthScreen({
               <Field label="Password · 12 characters minimum" name="password" type="password" autoComplete="new-password" minLength={12} required />
               <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Creating…</> : <>Create workspace <ArrowUpRight size={17} /></>}</button>
             </form>
+          </>}
+          {stage === "customer-request" && <>
+            <button className="back-link" onClick={() => onStageChange("sign-in")}>← Back to sign in</button><span className="eyebrow">CUSTOMER PORTAL</span><h2>Request customer access</h2><p className="auth-subtitle">Send your details to the organization administrator. They will review your request and contact you with login details.</p>
+            {error && <div className="form-error">{error}</div>}
+            <form className="form-stack form-stack-compact" onSubmit={onCustomerAccessRequest}>
+              <Field label="Organization slug" name="organization_slug" placeholder="Ask your terminal contact for this" required autoComplete="organization" />
+              <Field label="Company name" name="company_name" placeholder="Your logistics company" required />
+              <Field label="Contact name" name="contact_name" placeholder="Your name" required autoComplete="name" />
+              <Field label="Work email" name="email" type="email" placeholder="name@company.com" required autoComplete="email" />
+              <Field label="Message (optional)" name="message" placeholder="What access do you need?" maxLength={500} />
+              <div className="form-hint">No password is created yet. The administrator will approve the request, set a password and share it with you. Customers do not need an authenticator code.</div>
+              <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Sending request…</> : <>Send request <ArrowUpRight size={17} /></>}</button>
+            </form>
+          </>}
+          {stage === "customer-request-sent" && <>
+            <span className="eyebrow">REQUEST SENT</span><h2>Your request is with the administrator</h2><p className="auth-subtitle">The administrator will see it in the Customers workspace and contact you to provide your sign-in details. This demo does not send automatic email notifications.</p><div className="form-hint"><ShieldCheck size={14} /> Customer sign-in does not require an authenticator code.</div><button className="secondary-button" onClick={() => onStageChange("sign-in")}>Back to sign in</button>
           </>}
           {stage === "mfa-setup" && <>
             <span className="eyebrow">ADMIN MFA SETUP</span><h2>Secure your admin access</h2><p className="auth-subtitle">Add <strong>{setupEmail}</strong> to an authenticator app, then enter the current code below.</p>
@@ -667,14 +739,15 @@ function BillingView({ tariffs, invoices, visits, onNewTariff, onPublish, onGene
   </>;
 }
 
-function CustomersView({ customers, visitRows, canManagePortal, onAdd, onCreatePortalLogin }: { customers: Customer[]; visitRows: { visit: Visit; container?: Container; customer?: Customer }[]; canManagePortal: boolean; onAdd: () => void; onCreatePortalLogin: (customer: Customer) => void }) {
+function CustomersView({ customers, visitRows, portalRequests, canManagePortal, onAdd, onApproveRequest, onRejectRequest, onCreatePortalLogin }: { customers: Customer[]; visitRows: { visit: Visit; container?: Container; customer?: Customer }[]; portalRequests: CustomerPortalAccessRequest[]; canManagePortal: boolean; onAdd: () => void; onApproveRequest: (request: CustomerPortalAccessRequest) => void; onRejectRequest: (requestId: string) => void; onCreatePortalLogin: (customer: Customer) => void }) {
   return <>
     <PageTitle eyebrow="MANAGEMENT / CUSTOMER ACCOUNTS" title="Customer visibility" subtitle="Customer organizations see only their assigned container visits and operational invoices." actions={<><span className="readonly-pill"><ShieldCheck size={14} /> Tenant and customer scoped</span><button className="primary-button" onClick={onAdd}><Plus size={16} /> Add customer</button></>} />
+    {canManagePortal && portalRequests.length > 0 && <section className="panel data-panel"><div className="panel-heading"><div><span className="eyebrow">CUSTOMER ONBOARDING</span><h2>Pending portal access requests</h2></div><Badge tone="amber">{portalRequests.length} waiting</Badge></div><div className="table-wrap"><table><thead><tr><th>COMPANY / CONTACT</th><th>REQUEST</th><th>RECEIVED</th><th>ACTION</th></tr></thead><tbody>{portalRequests.map((request) => <tr key={request.id}><td><div className="table-primary">{request.company_name}</div><span className="table-subtle">{request.contact_name} · {request.email}</span></td><td>{request.message || "Customer portal access"}</td><td>{dateTime(request.created_at)}</td><td><div className="table-actions"><button className="primary-button button-small" onClick={() => onApproveRequest(request)}>Review & grant</button><button className="text-button" onClick={() => onRejectRequest(request.id)}>Decline</button></div></td></tr>)}</tbody></table></div></section>}
     <div className="customer-grid">{customers.map((customer) => {
       const customerVisits = visitRows.filter((row) => row.customer?.id === customer.id);
       return <section className="panel customer-card" key={customer.id}><div className="customer-card-top"><div className="customer-avatar">{initials(customer.name)}</div><Badge tone="green">Active</Badge></div><h2>{customer.name}</h2><p>{customer.code}</p><div className="customer-stats"><div><strong>{customerVisits.length}</strong><span>Visits</span></div><div><strong>{customerVisits.filter(({ visit }) => visit.status === "in_terminal").length}</strong><span>In custody</span></div><div><strong>{customerVisits.filter(({ visit }) => visit.status === "released").length}</strong><span>Released</span></div></div><div className="customer-email">{customer.email || "No portal email assigned"}</div>{canManagePortal && <button className="secondary-button button-small" onClick={() => onCreatePortalLogin(customer)}>Create portal login <ArrowUpRight size={14} /></button>}</section>;
     })}{!customers.length && <EmptyCard title="No customer accounts" detail="Add customers through the API or load the clearly labeled demo seed." />}</div>
-    <div className="integration-note"><Users size={16} /><span><strong>Portal accounts.</strong> An organization admin can create a customer login. Automated email invitations and password resets are not configured, so share the initial password directly.</span></div>
+    <div className="integration-note"><Users size={16} /><span><strong>Customer onboarding.</strong> Visitors can request access from the sign-in page. Requests appear here for organization admins; email notifications are not configured, so contact the customer directly after approving.</span></div>
   </>;
 }
 
@@ -715,7 +788,7 @@ function EmptyCard({ title, detail, action }: { title: string; detail: string; a
   return <div className="empty-card"><div className="empty-icon"><Boxes size={20} /></div><strong>{title}</strong><span>{detail}</span>{action}</div>;
 }
 
-function WorkspaceModal({ type, busy, terminals, customers, containers, vessels, selectedTerminal, selectedVisit, selectedCustomer, yardChoices, onClose, onSubmit }: {
+function WorkspaceModal({ type, busy, terminals, customers, containers, vessels, selectedTerminal, selectedVisit, selectedCustomer, selectedPortalRequest, yardChoices, onClose, onSubmit }: {
   type: Exclude<ModalType, null>;
   busy: boolean;
   terminals: Terminal[];
@@ -725,13 +798,14 @@ function WorkspaceModal({ type, busy, terminals, customers, containers, vessels,
   selectedTerminal: string;
   selectedVisit: Visit | null;
   selectedCustomer: Customer | null;
+  selectedPortalRequest: CustomerPortalAccessRequest | null;
   yardChoices: { slot_id: string; code: string; score: number; reason: string }[];
   onClose: () => void;
   onSubmit: (type: Exclude<ModalType, null>, form: FormData) => Promise<void>;
 }) {
   const [containerSearch, setContainerSearch] = useState("");
   const [selectedContainerId, setSelectedContainerId] = useState("");
-  const titles: Record<Exclude<ModalType, null>, string> = { walkin: "Register a walk-in", visit: "Create first visit", appointment: "Schedule a gate visit", vessel: "Add vessel call", tariff: "Create tariff version", terminal: "Add terminal", container: "Register container", customer: "Add customer account", "customer-login": "Create customer portal login", receive: "Record custody receipt", release: "Release custody", allocate: "Allocate yard slot" };
+  const titles: Record<Exclude<ModalType, null>, string> = { walkin: "Register a walk-in", visit: "Create first visit", appointment: "Schedule a gate visit", vessel: "Add vessel call", tariff: "Create tariff version", terminal: "Add terminal", container: "Register container", customer: "Add customer account", "customer-login": "Create customer portal login", "portal-request": "Approve customer access", receive: "Record custody receipt", release: "Release custody", allocate: "Allocate yard slot" };
   const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void onSubmit(type, new FormData(event.currentTarget)); };
   const terminalField = <div className="field"><label htmlFor="terminal_id">Terminal</label><select id="terminal_id" name="terminal_id" defaultValue={selectedTerminal} required>{terminals.map((terminal) => <option key={terminal.id} value={terminal.id}>{terminal.name}</option>)}</select></div>;
   const customerField = <div className="field"><label htmlFor="customer_id">Customer</label><select id="customer_id" name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></div>;
@@ -744,12 +818,12 @@ function WorkspaceModal({ type, busy, terminals, customers, containers, vessels,
   const categoryField = <div className="field"><label htmlFor="category">Container category</label><select name="category" id="category" defaultValue="DRY"><option>DRY</option><option>REEFER</option><option>HAZARDOUS</option><option>OPEN_TOP</option><option>FLAT_RACK</option></select></div>;
   const sizeField = <div className="field"><label htmlFor="size_feet">Size</label><select name="size_feet" id="size_feet" defaultValue="40"><option value="20">20 ft</option><option value="40">40 ft</option><option value="45">45 ft</option></select></div>;
   const checkbox = (name: string, label: string) => <label className="checkbox-field"><input type="checkbox" name={name} /><span>{label}</span></label>;
-  const footer = <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <><span className="button-spinner" /> Saving…</> : <>{type === "customer-login" ? "Create login" : "Save record"} <ArrowUpRight size={15} /></>}</button></div>;
+  const footer = <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <><span className="button-spinner" /> Saving…</> : <>{type === "customer-login" ? "Create login" : type === "portal-request" ? "Grant access" : "Save record"} <ArrowUpRight size={15} /></>}</button></div>;
   return <ModalFrame title={titles[type]} onClose={onClose}>
     {type === "allocate" ? <div className="yard-choice-list">{yardChoices.map((choice) => <form key={choice.slot_id} onSubmit={(event) => { event.preventDefault(); const data = new FormData(); data.set("slot_id", choice.slot_id); void onSubmit("allocate", data); }}><div><strong>{choice.code}</strong><span>{choice.reason}</span></div><Badge tone="green">Score {choice.score}</Badge><button className="secondary-button button-small" disabled={busy}>Assign <ArrowUpRight size={13} /></button></form>)}{!yardChoices.length && <div className="empty-inline"><strong>No clear compatible slot</strong><span>Clear a slot or review the category setup before allocating {selectedVisit?.visit_reference}.</span></div>}</div> : (
       <form className="modal-form" onSubmit={submit}>
         {(type === "walkin" || type === "appointment" || type === "vessel" || type === "tariff" || type === "terminal" || type === "container" || type === "customer") && terminalField}
-        {(type === "walkin" || type === "appointment" || type === "container") && customerField}
+        {(type === "walkin" || type === "appointment" || type === "container" || type === "portal-request") && customerField}
         {type === "visit" && <>
           <div className="form-hint"><ShieldCheck size={14} /> Select an already registered container for {terminals.find((terminal) => terminal.id === selectedTerminal)?.name ?? "this terminal"}. This creates a visit only; it does not register another container.</div>
           <div className="field"><label htmlFor="container_search">Search registered containers</label><input id="container_search" type="search" value={containerSearch} onChange={(event) => { setContainerSearch(event.target.value); setSelectedContainerId(""); }} placeholder="Container number or customer" /></div>
@@ -769,6 +843,7 @@ function WorkspaceModal({ type, busy, terminals, customers, containers, vessels,
         {type === "terminal" && <><Field label="Terminal code" name="code" placeholder="MUM-02" required /><Field label="Terminal name" name="name" placeholder="North Yard Annex" required /><div className="field"><label htmlFor="timezone">Timezone</label><select name="timezone" id="timezone" defaultValue="Asia/Kolkata"><option value="Asia/Kolkata">Asia/Kolkata (IST)</option><option value="UTC">UTC</option></select></div><Field label="Address" name="address" placeholder="Optional terminal address" /></>}
         {type === "customer" && <><Field label="Customer code" name="code" placeholder="WSL-001" required /><Field label="Customer organization" name="name" placeholder="Western Star Logistics" required /><Field label="Portal email (optional)" name="email" type="email" placeholder="operations@customer.in" /></>}
         {type === "customer-login" && <><div className="form-hint"><ShieldCheck size={14} /> This sign-in will see only {selectedCustomer?.name ?? "this customer"}’s containers and invoices. Use the original website link and your organization slug to sign in.</div><Field label="Customer contact name" name="display_name" placeholder="Customer user" required autoComplete="name" /><Field label="Login email" name="email" type="email" placeholder={selectedCustomer?.email || "name@company.com"} required autoComplete="username" /><Field label="Password · 12 characters minimum" name="password" type="password" required minLength={12} autoComplete="new-password" /><div className="form-hint">Email invitations and password reset are not configured. Share the email and password privately with the customer.</div></>}
+        {type === "portal-request" && <><div className="modal-context"><span className="container-glyph"><Users size={14} /></span><div><strong>{selectedPortalRequest?.company_name}</strong><span>{selectedPortalRequest?.contact_name} · {selectedPortalRequest?.email}</span></div></div><div className="form-hint"><ShieldCheck size={14} /> Link this request to the correct customer record. Set a password, then send the email, organization slug and password to the customer privately.</div><Field label="Password · 12 characters minimum" name="password" type="password" required minLength={12} autoComplete="new-password" /></>}
         {(type === "receive" || type === "release") && <><div className="modal-context"><span className="container-glyph"><ContainerIcon size={14} /></span><div><strong>{selectedVisit?.visit_reference}</strong><span>Container visit · {selectedVisit?.status.replaceAll("_", " ")}</span></div></div><div className="field"><label htmlFor="mode">Custody handover mode</label><select id="mode" name="mode" defaultValue={type === "receive" ? "truck" : "truck_gate_out"}>{type === "receive" ? <><option value="truck">Truck gate-in</option><option value="rail">Rail receipt</option><option value="vessel">Vessel discharge</option></> : <><option value="truck_gate_out">Truck gate-out</option><option value="rail_dispatch">Rail dispatch</option><option value="vessel_loading">Vessel loading / operational handover</option></>}</select></div><Field label="External reference (optional)" name="external_reference" placeholder="Gate ticket, manifest or dispatch reference" /><div className="form-hint"><ShieldCheck size={14} /> This event is appended to the custody record with an idempotency key.</div></>}
         {footer}
       </form>

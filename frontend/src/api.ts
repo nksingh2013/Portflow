@@ -38,6 +38,16 @@ export type Customer = {
   terminal_id: string;
 };
 
+export type CustomerPortalAccessRequest = {
+  id: string;
+  company_name: string;
+  contact_name: string;
+  email: string;
+  message: string;
+  status: string;
+  created_at: string;
+};
+
 export type Container = {
   id: string;
   terminal_id: string;
@@ -228,6 +238,25 @@ export async function register(payload: {
     throw new Error(result?.detail ?? `Registration failed (${response.status})`);
   }
   return (await response.json()) as { setup_token: string; mfa_secret: string; mfa_uri: string; organization_slug: string; message: string };
+}
+
+export async function requestCustomerAccess(payload: {
+  organization_slug: string;
+  company_name: string;
+  contact_name: string;
+  email: string;
+  message: string;
+}) {
+  const response = await fetch("/api/v1/auth/customer-requests", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => null);
+    throw new Error(result?.detail ?? `Access request failed (${response.status})`);
+  }
+  return (await response.json()) as { status: string; request_id: string; message: string };
 }
 
 export function sessionFromToken(token: TokenResponse): Session {

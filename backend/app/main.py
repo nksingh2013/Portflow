@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import Principal, get_current_principal, require_roles, verify_totp
 from app.config import settings
-from app.db import get_db, set_identity_context, set_tenant_context
+from app.db import get_db, set_identity_context, set_public_organization_slug, set_tenant_context
 from app.models import (
     AuditLog,
     Container,
@@ -28,6 +28,7 @@ from app.models import (
     GateAppointment,
     Membership,
     MovementEvent,
+    CustomerPortalRequest,
     OperationalInvoice,
     OperationalInvoiceLine,
     Organization,
@@ -46,6 +47,9 @@ from app.schemas import (
     CustodyReleaseInput,
     CustomerCreate,
     CustomerOut,
+    CustomerPortalGrant,
+    CustomerPortalRequestCreate,
+    CustomerPortalRequestOut,
     CustomerPortalUserCreate,
     GateAppointmentCreate,
     GateAppointmentOut,
@@ -395,6 +399,60 @@ def login(
     return _token_response(db, user, membership, organization)
 
 
+@app.post("/api/v1/auth/customer-requests", status_code=201, tags=["identity"])
+def request_customer_portal_access(payload: CustomerPortalRequestCreate, db: db_dep):
+    """Queue a customer access request for the named organization administrators."""
+    organization_slug = payload.organization_slug.strip().lower()
+    set_public_organization_slug(db, organization_slug)
+    organization_id = db.scalar(select(Organization.id).where(Organization.slug == organization_slug))
+    if organization_id is None:
+        raise HTTPException(status_code=404, detail="Organization not found. Check the organization slug with your terminal contact.")
+
+    set_tenant_context(db, organization_id)
+    email = str(payload.email).strip().lower()
+    existing = db.scalar(
+        select(CustomerPortalRequest).where(
+            CustomerPortalRequest.organization_id == organization_id,
+            CustomerPortalRequest.email == email,
+            CustomerPortalRequest.status == "pending",
+        )
+    )
+    if existing:
+        return {
+            "status": "pending",
+            "request_id": str(existing.id),
+            "message": "Your request is already waiting for the administrator.",
+        }
+
+    access_request = CustomerPortalRequest(
+        organization_id=organization_id,
+        company_name=payload.company_name.strip(),
+        contact_name=payload.contact_name.strip(),
+        email=email,
+        message=payload.message.strip(),
+    )
+    db.add(access_request)
+    try:
+        db.flush()
+        db.add(
+            AuditLog(
+                organization_id=organization_id,
+                action="customer.portal_access_requested",
+                entity_type="customer_portal_request",
+                entity_id=str(access_request.id),
+            )
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An access request from this email is already pending") from exc
+    return {
+        "status": "pending",
+        "request_id": str(access_request.id),
+        "message": "Your request has been sent to the organization administrator.",
+    }
+
+
 @app.get("/api/v1/auth/providers", tags=["identity"])
 def auth_providers():
     return {"email_password": True, "google": {"enabled": False, "reason": "OAuth credentials are not configured"}, "mfa": {"admin_required": True, "method": "TOTP"}}
@@ -511,6 +569,122 @@ def create_customer(payload: CustomerCreate, terminal_id: UUID, principal: Princ
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="A customer with that code already exists") from exc
+
+
+@app.get("/api/v1/portal-access-requests", response_model=list[CustomerPortalRequestOut], tags=["customer portal"])
+def list_customer_portal_requests(
+    principal: Principal = Depends(require_roles("organization_admin")),
+    db: Session = Depends(get_db),
+):
+    return list(
+        db.scalars(
+            select(CustomerPortalRequest)
+            .where(
+                CustomerPortalRequest.organization_id == principal.organization_id,
+                CustomerPortalRequest.status == "pending",
+            )
+            .order_by(CustomerPortalRequest.created_at.desc())
+            .limit(100)
+        )
+    )
+
+
+@app.post("/api/v1/portal-access-requests/{request_id}/approve", tags=["customer portal"])
+def approve_customer_portal_request(
+    request_id: UUID,
+    payload: CustomerPortalGrant,
+    principal: Principal = Depends(require_roles("organization_admin")),
+    db: Session = Depends(get_db),
+):
+    access_request = db.scalar(
+        select(CustomerPortalRequest)
+        .where(
+            CustomerPortalRequest.id == request_id,
+            CustomerPortalRequest.organization_id == principal.organization_id,
+            CustomerPortalRequest.status == "pending",
+        )
+        .with_for_update()
+    )
+    if access_request is None:
+        raise HTTPException(status_code=404, detail="Pending customer access request not found")
+
+    customer = db.scalar(
+        select(Customer).where(
+            Customer.id == payload.customer_id,
+            Customer.organization_id == principal.organization_id,
+            Customer.is_active.is_(True),
+        )
+    )
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Active customer account not found")
+    if db.scalar(select(User.id).where(User.email == access_request.email)):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    user = User(
+        email=access_request.email,
+        display_name=access_request.contact_name,
+        password_hash=hash_password(payload.password),
+        is_active=True,
+        mfa_enabled=False,
+    )
+    db.add(user)
+    try:
+        db.flush()
+        set_identity_context(db, user.id)
+        membership = Membership(
+            user_id=user.id,
+            organization_id=principal.organization_id,
+            organization_slug=principal.membership.organization_slug,
+            terminal_id=customer.terminal_id,
+            customer_id=customer.id,
+            role="customer",
+            is_active=True,
+        )
+        db.add(membership)
+        access_request.status = "approved"
+        access_request.customer_id = customer.id
+        access_request.terminal_id = customer.terminal_id
+        access_request.reviewed_by_id = principal.user.id
+        access_request.reviewed_at = utc_now()
+        db.flush()
+        audit(db, principal, "customer.portal_access_approved", "customer_portal_request", access_request.id, customer.terminal_id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This request was already reviewed or the email already has an account") from exc
+
+    return {
+        "email": user.email,
+        "display_name": user.display_name,
+        "organization_slug": membership.organization_slug,
+        "customer_name": customer.name,
+        "role": "customer",
+    }
+
+
+@app.post("/api/v1/portal-access-requests/{request_id}/reject", tags=["customer portal"])
+def reject_customer_portal_request(
+    request_id: UUID,
+    principal: Principal = Depends(require_roles("organization_admin")),
+    db: Session = Depends(get_db),
+):
+    access_request = db.scalar(
+        select(CustomerPortalRequest)
+        .where(
+            CustomerPortalRequest.id == request_id,
+            CustomerPortalRequest.organization_id == principal.organization_id,
+            CustomerPortalRequest.status == "pending",
+        )
+        .with_for_update()
+    )
+    if access_request is None:
+        raise HTTPException(status_code=404, detail="Pending customer access request not found")
+    access_request.status = "rejected"
+    access_request.reviewed_by_id = principal.user.id
+    access_request.reviewed_at = utc_now()
+    audit(db, principal, "customer.portal_access_rejected", "customer_portal_request", access_request.id)
+    db.commit()
+    return {"status": "rejected"}
 
 
 @app.post("/api/v1/customers/{customer_id}/portal-users", status_code=201, tags=["customers"])

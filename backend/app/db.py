@@ -43,6 +43,15 @@ def set_identity_context(session: Session, user_id: object) -> None:
     session.info["user_id"] = str(user_id)
 
 
+def set_public_organization_slug(session: Session, organization_slug: str) -> None:
+    """Allow one exact, public slug lookup before selecting tenant context."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(
+            text("SELECT set_config('app.public_organization_slug', :slug, true)"),
+            {"slug": organization_slug},
+        )
+
+
 def require_tenant_context(session: Session, organization_id: object) -> None:
     """Fail closed in application services if a tenant context was not established."""
     expected = str(organization_id)

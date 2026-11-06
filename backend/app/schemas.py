@@ -92,6 +92,29 @@ class CustomerPortalUserCreate(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+class CustomerPortalRequestCreate(BaseModel):
+    organization_slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,78}[a-z0-9]$", max_length=80)
+    company_name: str = Field(min_length=2, max_length=180)
+    contact_name: str = Field(min_length=2, max_length=180)
+    email: EmailStr
+    message: str = Field(default="", max_length=500)
+
+
+class CustomerPortalRequestOut(ORMModel):
+    id: UUID
+    company_name: str
+    contact_name: str
+    email: str
+    message: str
+    status: str
+    created_at: datetime
+
+
+class CustomerPortalGrant(BaseModel):
+    customer_id: UUID
+    password: str = Field(min_length=12, max_length=128)
+
+
 class ContainerCreate(BaseModel):
     terminal_id: UUID
     customer_id: UUID

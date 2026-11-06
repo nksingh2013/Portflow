@@ -219,6 +219,7 @@ tbody tr:hover td { background: #fbfdfc; }
 .direction-label { display: inline-flex; align-items: center; gap: 4px; color: #617780; text-transform: capitalize; }
 .direction-label svg { color: #599a8c; }
 .row-actions { display: flex; align-items: center; gap: 10px; }
+.table-actions { display: flex; align-items: center; gap: 10px; }
 .support-card, .integration-note, .billing-note { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid #e1ece8; border-radius: 8px; background: #f5faf8; color: #819794; font-size: 9px; line-height: 1.5; }
 .support-card { margin-top: 12px; }
 .support-icon { width: 29px; height: 29px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 8px; color: #3c8e80; background: #e5f2ee; }
