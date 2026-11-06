@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     demo_customer_password: SecretStr | None = None
     demo_admin_mfa_secret: SecretStr | None = None
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_postgres_url(cls, value):
+        """Use the installed psycopg v3 driver for standard Postgres URLs."""
+        if isinstance(value, str):
+            if value.startswith("postgres://"):
+                return "postgresql+psycopg://" + value[len("postgres://") :]
+            if value.startswith("postgresql://"):
+                return "postgresql+psycopg://" + value[len("postgresql://") :]
+        return value
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, value):

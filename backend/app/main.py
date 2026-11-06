@@ -1,5 +1,6 @@
 import secrets
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -8,6 +9,7 @@ import pyotp
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
 from jose import JWTError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -1323,4 +1325,9 @@ def subscription_usage(principal: principal_dep, db: db_dep):
         "rule": "One idempotent event per container visit, including empty containers and transshipment.",
         "billing_status": "usage tracking only; no PortFlow subscription invoice or payment processing is configured",
     }
+
+
+_frontend_dir = Path(__file__).resolve().parents[1] / "static"
+if _frontend_dir.is_dir():
+    app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
 

@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: portflow-college-demo
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PORTFLOW_APP_ENV
+        value: demo
+      - key: PORTFLOW_DEMO_MODE
+        value: "true"
+      - key: PORTFLOW_JWT_SECRET
+        generateValue: true
+      - key: PORTFLOW_DATABASE_URL
+        fromDatabase:
+          name: portflow-college-db
+          property: connectionString
+
+databases:
+  - name: portflow-college-db
+    databaseName: portflow
+    user: portflow_app
+    plan: free
+    region: oregon
