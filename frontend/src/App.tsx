@@ -48,6 +48,7 @@ import {
   setAccessToken,
   uploadlessMfaConfirm,
 } from "./api";
+import { demoTerminal, demoTerminalId, isPresentationDemo } from "./demo";
 
 type Screen = "overview" | "containers" | "gate" | "yard" | "vessels" | "billing" | "customers" | "portal" | "settings";
 type ModalType = "walkin" | "visit" | "appointment" | "vessel" | "tariff" | "terminal" | "container" | "customer" | "receive" | "release" | "allocate" | null;
@@ -92,11 +93,20 @@ function ModalFrame({ title, onClose, children }: { title: string; onClose: () =
 
 function App() {
   const [stage, setStage] = useState<LoginStage>("sign-in");
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<Session | null>(() => isPresentationDemo ? {
+    token: "public-sample-preview",
+    role: "demo_viewer",
+    organizationName: "PortFlow College Demo",
+    organizationSlug: "portflow-college-demo",
+    userName: "College Presenter",
+    terminalId: demoTerminalId,
+  } : null);
   const [screen, setScreen] = useState<Screen>("overview");
-  const [meta, setMeta] = useState<{ demo_mode: boolean; google_login_enabled: boolean } | null>(null);
-  const [terminals, setTerminals] = useState<Terminal[]>([]);
-  const [terminalId, setTerminalId] = useState("");
+  const [meta, setMeta] = useState<{ demo_mode: boolean; google_login_enabled: boolean } | null>(
+    () => isPresentationDemo ? { demo_mode: true, google_login_enabled: false } : null,
+  );
+  const [terminals, setTerminals] = useState<Terminal[]>(() => isPresentationDemo ? [demoTerminal] : []);
+  const [terminalId, setTerminalId] = useState(() => isPresentationDemo ? demoTerminalId : "");
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [containers, setContainers] = useState<Container[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
@@ -137,6 +147,7 @@ function App() {
   };
 
   useEffect(() => {
+    if (isPresentationDemo) return;
     get<{ demo_mode: boolean; google_login_enabled: boolean }>("/meta").then(setMeta).catch(() => setMeta(null));
   }, []);
 
@@ -277,6 +288,10 @@ function App() {
   };
 
   const runAction = async (action: () => Promise<unknown>, success: string) => {
+    if (session?.role === "demo_viewer") {
+      setNotice({ tone: "info", text: "Read-only presentation demo · changes are disabled." });
+      return;
+    }
     if (!beginAction()) return;
     setNotice(null);
     try {
@@ -298,6 +313,10 @@ function App() {
   };
 
   const openAllocation = async (visit: Visit) => {
+    if (session?.role === "demo_viewer") {
+      setNotice({ tone: "info", text: "Read-only presentation demo · changes are disabled." });
+      return;
+    }
     if (!beginAction()) return;
     setNotice(null);
     try {
@@ -322,6 +341,7 @@ function App() {
     return !term || [visit.visit_reference, container?.container_number, customer?.name, visit.status].some((value) => value?.toLowerCase().includes(term));
   });
   const operator = session?.role !== "customer";
+  const readOnlyDemo = session?.role === "demo_viewer";
 
   if (!session) {
     return (
@@ -348,7 +368,14 @@ function App() {
     { id: "billing" as Screen, label: "Invoices", icon: FileText, group: "CUSTOMER" },
   ] : navItems;
 
-  const openModal = (name: ModalType) => { setNotice(null); setModal(name); };
+  const openModal = (name: ModalType) => {
+    if (readOnlyDemo) {
+      setNotice({ tone: "info", text: "Read-only presentation demo · changes are disabled." });
+      return;
+    }
+    setNotice(null);
+    setModal(name);
+  };
   const handleTerminalChange = (value: string) => {
     setTerminalId(value);
     setSession((current) => current ? { ...current, terminalId: value } : current);
@@ -385,7 +412,7 @@ function App() {
         </header>
 
         <div className="page-content">
-          {meta?.demo_mode && <div className="demo-banner"><span className="demo-pulse" /><strong>DEMO ENVIRONMENT</strong><span>No live port, email, or payment integrations</span></div>}
+          {readOnlyDemo ? <div className="demo-banner demo-readonly-banner"><span className="demo-pulse" /><strong>READ-ONLY PRESENTATION</strong><span>Fictional sample data · changes are disabled</span><a href="/?login=1">Administrator sign in</a></div> : meta?.demo_mode && <div className="demo-banner"><span className="demo-pulse" /><strong>DEMO ENVIRONMENT</strong><span>No live port, email, or payment integrations</span></div>}
           {notice && <div className={`notice notice-${notice.tone}`}><span>{notice.text}</span><button onClick={() => setNotice(null)} aria-label="Dismiss message"><X size={15} /></button></div>}
           {loading && <div className="loading-line"><span />Refreshing terminal data…</div>}
           {selectedScreen === "overview" && !customerMode && <OverviewView summary={summary} rows={visitRows} vessels={vessels} slots={slots} onWalkIn={() => openModal("walkin")} onAppointment={() => openModal("appointment")} onNavigate={setScreen} />}
@@ -502,6 +529,7 @@ function AuthScreen({
               <Field label="Authenticator code" name="mfa" placeholder="6-digit code" inputMode="numeric" maxLength={8} />
               <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Signing in…</> : <>Continue <ArrowUpRight size={17} /></>}</button>
             </form>
+            {demoMode && <a className="secondary-button demo-preview-link" href="/?demo=1">Open the read-only sample workspace <ArrowUpRight size={15} /></a>}
             <button className="provider-button" disabled title="Google OAuth is not configured"><span className="google-mark">G</span> Continue with Google <span className="provider-note">Not configured</span></button>
             <p className="auth-switch">New to PortFlow? <button onClick={() => onStageChange("register")}>Set up an organization</button></p>
           </>}

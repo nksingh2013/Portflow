@@ -1,3 +1,5 @@
+import { demoResponse, isPresentationDemo } from "./demo";
+
 export type TokenResponse = {
   access_token: string;
   token_type: string;
@@ -167,10 +169,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export function post<T>(path: string, body: unknown): Promise<T> {
+  if (isPresentationDemo) return Promise.reject(new Error("This presentation demo is read-only."));
   return request<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
 
 export function get<T>(path: string): Promise<T> {
+  if (isPresentationDemo) return Promise.resolve(demoResponse(path) as T);
   return request<T>(path);
 }
 

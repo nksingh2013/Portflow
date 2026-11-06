@@ -88,6 +88,8 @@ a { color: inherit; }
 .demo-banner { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 7px 11px; margin: 0 0 17px; color: #855c28; border: 1px solid #f1dfc4; border-radius: 7px; background: #fff8ed; font-size: 10px; }
 .demo-banner strong { color: #965c1e; font-size: 9px; letter-spacing: .65px; }
 .demo-banner span:last-child { color: #977e5e; }
+.demo-banner a { margin-left: auto; color: #187e75; font-weight: 600; text-decoration: none; }
+.demo-preview-link { width: 100%; margin-top: 10px; text-decoration: none; }
 .demo-pulse { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #d58c45; box-shadow: 0 0 0 3px rgba(213, 140, 69, .12); }
 .notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border-radius: 8px; margin-bottom: 14px; font-size: 11px; }
 .notice button { background: transparent; border: 0; color: inherit; display: grid; place-items: center; }
