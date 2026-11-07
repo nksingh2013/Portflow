@@ -6,17 +6,15 @@ from typing import Annotated
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-import pyotp
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from jose import JWTError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth import Principal, get_current_principal, require_roles, verify_totp
+from app.auth import Principal, get_current_principal, require_roles
 from app.config import settings
 from app.db import get_db, set_identity_context, set_public_organization_slug, set_tenant_context
 from app.models import (
@@ -61,8 +59,6 @@ from app.schemas import (
     InvoiceDetailOut,
     InvoiceLineOut,
     InvoiceOut,
-    MFAEnableInput,
-    MFAConfirmInput,
     OrganizationOut,
     PublicMeta,
     RegisterInput,
@@ -85,7 +81,7 @@ from app.schemas import (
     MovementOut,
 )
 
-from app.security import create_token, decode_token, hash_password, verify_password
+from app.security import create_token, hash_password, verify_password
 from app.services import (
     audit,
     ensure_customer_scope,
@@ -217,13 +213,12 @@ def list_port_catalog():
 
 @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED, tags=["identity"])
 def register(payload: RegisterInput, db: db_dep):
-    """Create a tenant and its first administrator, then begin mandatory MFA setup."""
+    """Create a tenant and sign in its first administrator with email and password."""
     email = str(payload.email).lower()
     if db.scalar(select(User.id).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     requested_slug = payload.organization_slug.strip().lower()
     organization_slug = requested_slug
-    secret = pyotp.random_base32()
     password_hash = hash_password(payload.password)
 
     for attempt in range(4):
@@ -252,8 +247,6 @@ def register(payload: RegisterInput, db: db_dep):
                 email=email,
                 display_name=payload.admin_name,
                 password_hash=password_hash,
-                mfa_secret=secret,
-                mfa_enabled=False,
             )
             membership = Membership(
                 id=membership_id,
@@ -300,21 +293,7 @@ def register(payload: RegisterInput, db: db_dep):
             db.rollback()
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    setup_token = create_token(
-        user_id,
-        organization_id,
-        membership_id,
-        "organization_admin",
-        scope="mfa_setup",
-        lifetime=timedelta(minutes=15),
-    )
-    return {
-        "setup_token": setup_token,
-        "mfa_secret": secret,
-        "mfa_uri": pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="PortFlow"),
-        "organization_slug": organization_slug,
-        "message": "Add this account to an authenticator app, then confirm the current code.",
-    }
+    return _token_response(db, user, membership, organization)
 
 
 def _integrity_constraint_name(exc: IntegrityError) -> str:
@@ -344,41 +323,10 @@ def _registration_conflict(constraint: str) -> str | None:
     return None
 
 
-@app.post("/api/v1/auth/mfa/confirm", response_model=TokenResponse, tags=["identity"])
-def confirm_mfa(payload: MFAConfirmInput, db: db_dep):
-    try:
-        claims = decode_token(payload.setup_token, expected_scope="mfa_setup")
-        user_id, organization_id, membership_id = UUID(claims["sub"]), UUID(claims["org"]), UUID(claims["membership"])
-    except (JWTError, ValueError, KeyError):
-        raise HTTPException(status_code=401, detail="MFA setup session expired; register again") from None
-    set_identity_context(db, user_id)
-    set_tenant_context(db, organization_id)
-    user = db.scalar(select(User).where(User.id == user_id, User.is_active.is_(True)))
-    membership = db.scalar(
-        select(Membership).where(
-            Membership.id == membership_id,
-            Membership.user_id == user_id,
-            Membership.organization_id == organization_id,
-            Membership.is_active.is_(True),
-        )
-    )
-    if not user or not membership or not user.mfa_secret:
-        raise HTTPException(status_code=401, detail="MFA setup session is no longer valid")
-    if not pyotp.TOTP(user.mfa_secret).verify(payload.code.strip(), valid_window=1):
-        raise HTTPException(status_code=401, detail="Authenticator code is not valid")
-    user.mfa_enabled = True
-    organization = db.get(Organization, organization_id)
-    db.commit()
-    if organization is None:
-        raise HTTPException(status_code=404, detail="Organization not found")
-    return _token_response(db, user, membership, organization)
-
-
 @app.post("/api/v1/auth/token", response_model=TokenResponse, tags=["identity"])
 def login(
     db: db_dep,
     form: Annotated[OAuth2PasswordRequestForm, Depends()],
-    mfa_code: Annotated[str | None, Form()] = None,
     organization_slug: Annotated[str | None, Form()] = None,
 ):
     email = form.username.strip().lower()
@@ -396,15 +344,10 @@ def login(
     else:
         membership = None
     if membership is None:
+        if len(memberships) > 1 and not organization_slug:
+            raise HTTPException(status_code=401, detail="This account belongs to multiple organizations. Enter the organization slug to continue.")
         raise HTTPException(status_code=401, detail="No active access for that organization")
     set_tenant_context(db, membership.organization_id)
-    if membership.role in ("organization_admin", "platform_super_admin"):
-        if not user.mfa_enabled:
-            raise HTTPException(status_code=403, detail="Administrator MFA setup is required before sign-in")
-        if not verify_totp(user, mfa_code):
-            raise HTTPException(status_code=401, detail="Authenticator code is required or invalid")
-    elif user.mfa_enabled and not verify_totp(user, mfa_code):
-        raise HTTPException(status_code=401, detail="Authenticator code is required or invalid")
     organization = db.get(Organization, membership.organization_id)
     if organization is None:
         raise HTTPException(status_code=401, detail="No active access for that organization")
@@ -496,34 +439,7 @@ def create_contact_request(payload: ContactInquiryCreate, db: db_dep):
 
 @app.get("/api/v1/auth/providers", tags=["identity"])
 def auth_providers():
-    return {"email_password": True, "google": {"enabled": False, "reason": "OAuth credentials are not configured"}, "mfa": {"admin_required": True, "method": "TOTP"}}
-
-
-@app.post("/api/v1/auth/mfa/setup", tags=["identity"])
-def setup_optional_mfa(principal: principal_dep, db: db_dep):
-    if principal.user.mfa_enabled:
-        raise HTTPException(status_code=409, detail="Multi-factor authentication is already enabled")
-    secret = pyotp.random_base32()
-    principal.user.mfa_secret = secret
-    audit(db, principal, "user.mfa_enrollment_started", "user", principal.user.id, principal.membership.terminal_id)
-    db.commit()
-    return {
-        "mfa_secret": secret,
-        "mfa_uri": pyotp.TOTP(secret).provisioning_uri(name=principal.user.email, issuer_name="PortFlow"),
-        "message": "Add this account to an authenticator app, then confirm the current code.",
-    }
-
-
-@app.post("/api/v1/auth/mfa/enable", tags=["identity"])
-def enable_optional_mfa(payload: MFAEnableInput, principal: principal_dep, db: db_dep):
-    if principal.user.mfa_enabled:
-        raise HTTPException(status_code=409, detail="Multi-factor authentication is already enabled")
-    if not principal.user.mfa_secret or not pyotp.TOTP(principal.user.mfa_secret).verify(payload.code.strip(), valid_window=1):
-        raise HTTPException(status_code=401, detail="Authenticator code is not valid")
-    principal.user.mfa_enabled = True
-    audit(db, principal, "user.mfa_enabled", "user", principal.user.id, principal.membership.terminal_id)
-    db.commit()
-    return {"enabled": True}
+    return {"email_password": True, "google": {"enabled": False, "reason": "OAuth credentials are not configured"}, "mfa": {"enabled": False}}
 
 
 @app.get("/api/v1/me", tags=["identity"])
@@ -825,7 +741,6 @@ def approve_customer_portal_request(
         display_name=access_request.contact_name,
         password_hash=hash_password(payload.password),
         is_active=True,
-        mfa_enabled=False,
     )
     db.add(user)
     try:
@@ -915,7 +830,6 @@ def create_customer_portal_user(
         display_name=payload.display_name.strip(),
         password_hash=hash_password(payload.password),
         is_active=True,
-        mfa_enabled=False,
     )
     db.add(user)
     try:

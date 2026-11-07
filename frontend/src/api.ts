@@ -221,12 +221,11 @@ export function get<T>(path: string): Promise<T> {
   return request<T>(path);
 }
 
-export async function login(email: string, password: string, organizationSlug: string, mfaCode: string) {
+export async function login(email: string, password: string, organizationSlug: string) {
   const form = new URLSearchParams();
   form.set("username", email);
   form.set("password", password);
   form.set("organization_slug", organizationSlug);
-  if (mfaCode) form.set("mfa_code", mfaCode);
   const response = await fetch("/api/v1/auth/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
@@ -235,19 +234,6 @@ export async function login(email: string, password: string, organizationSlug: s
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.detail ?? `Sign-in failed (${response.status})`);
-  }
-  return (await response.json()) as TokenResponse;
-}
-
-export async function uploadlessMfaConfirm(setupToken: string, code: string) {
-  const response = await fetch("/api/v1/auth/mfa/confirm", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ setup_token: setupToken, code }),
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.detail ?? `MFA confirmation failed (${response.status})`);
   }
   return (await response.json()) as TokenResponse;
 }
@@ -270,7 +256,7 @@ export async function register(payload: {
     const result = await response.json().catch(() => null);
     throw new Error(result?.detail ?? `Registration failed (${response.status})`);
   }
-  return (await response.json()) as { setup_token: string; mfa_secret: string; mfa_uri: string; organization_slug: string; message: string };
+  return (await response.json()) as TokenResponse;
 }
 
 export async function requestCustomerAccess(payload: {

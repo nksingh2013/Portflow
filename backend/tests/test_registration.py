@@ -20,6 +20,27 @@ def test_registration_retries_with_available_slug_when_requested_slug_is_taken(c
     assert response.status_code == 201
     payload = response.json()
     assert payload["organization_slug"].startswith(f"{database['organization'].slug}-")
+    assert payload["access_token"]
+    assert payload["role"] == "organization_admin"
+
+    # Existing admins who previously enrolled no longer need a code.
+    with database["factory"]() as session:
+        user = session.scalar(select(User).where(User.email == "college-owner@example.com"))
+        user.mfa_secret = "legacy-secret"
+        user.mfa_enabled = True
+        session.commit()
+
+    login = client.post(
+        "/api/v1/auth/token",
+        data={
+            "username": "college-owner@example.com",
+            "password": "college-demo-password-123",
+        },
+    )
+    assert login.status_code == 200
+    assert login.json()["access_token"]
+    assert client.post("/api/v1/auth/mfa/confirm", json={}).status_code == 404
+    assert client.post("/api/v1/auth/mfa/setup", json={}).status_code == 404
 
     with database["factory"]() as session:
         user = session.scalar(select(User).where(User.email == "college-owner@example.com"))

@@ -20,15 +20,6 @@ class RegisterInput(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
-class MFAConfirmInput(BaseModel):
-    setup_token: str
-    code: str = Field(min_length=6, max_length=8)
-
-
-class MFAEnableInput(BaseModel):
-    code: str = Field(min_length=6, max_length=8)
-
-
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

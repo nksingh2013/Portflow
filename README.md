@@ -19,7 +19,7 @@ Open the operator console at <http://localhost:8080> and API docs at <http://loc
 docker compose run --rm api python -m app.seed_demo
 ```
 
-The bootstrap script writes generated demo passwords and the administrator MFA setup key into the local `.env` file. Read them from that file to sign in and enroll the administrator in an authenticator app. The seed command does not print secret values. Never use demo credentials in production.
+The bootstrap script writes generated demo passwords into the local `.env` file. Admin and customer accounts sign in with email and password; authenticator verification is disabled in this college demo. The seed command does not print secret values. Never use demo credentials in production.
 
 ## API and local development
 
@@ -34,14 +34,14 @@ The bootstrap script generates local secrets and creates `.env`; it never checks
 
 ## Demo flow
 
-After seeding, sign in as the printed organization administrator (include the current TOTP code) to see the operator workspace. The customer portal uses a separate printed customer login. Demo content is labeled throughout the UI. All dashboard values come from API queries over stored records.
+After seeding, sign in as the printed organization administrator with the organization slug, email, and password to see the operator workspace. The customer portal uses a separate printed customer login. Demo content is labeled throughout the UI. All dashboard values come from API queries over stored records.
 
 The first vertical slice supports organizations/terminals, customer accounts, containers/visits, truck/rail/vessel custody receipt, movements, yard slot suggestions/allocation, manual vessel calls, gate appointments and walk-ins, published storage tariffs, operational invoices, customer visibility, audit events, and idempotent per-visit SaaS usage events.
 
 ## Security and commercial readiness
 
 - Passwords use Argon2id. JWT secret, database passwords, and demo credentials come from environment variables.
-- Admin MFA uses TOTP in this milestone. Google OAuth has an explicit provider interface but is not configured.
+- Authenticator verification is disabled for this college demonstration; password-only sign-in is not suitable for real operational data. Add MFA before using real operational data. Google OAuth has an explicit provider interface but is not configured.
 - Tenant context comes from a signed identity token and a verified active database membership, then uses transaction-scoped `SET LOCAL`. RLS policies are fail-closed; table ownership and database superuser access bypass ordinary RLS protections, so production app credentials must remain non-owner and non-superuser.
 - Published tariff versions and custody/movement events are append-only from API routes. Invoice lines preserve a JSON snapshot of the tariff calculation.
 - Operational invoices are separate from PortFlow SaaS subscription/usage records. Usage counts one event per visit, including empty containers and transshipment.

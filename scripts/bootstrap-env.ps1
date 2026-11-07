@@ -14,15 +14,6 @@ function New-Secret([int]$Bytes = 32) {
     return [BitConverter]::ToString($buffer).Replace("-", "").ToLowerInvariant()
 }
 
-function New-Base32Secret([int]$Length = 32) {
-    $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-    $buffer = [byte[]]::new($Length)
-    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try { $generator.GetBytes($buffer) } finally { $generator.Dispose() }
-    $chars = foreach ($byte in $buffer) { $alphabet[[int]($byte -band 31)] }
-    return -join $chars
-}
-
 $lines = @(
     'PORTFLOW_APP_ENV=development',
     'PORTFLOW_DEMO_MODE=true',
@@ -35,7 +26,6 @@ $lines = @(
     'PORTFLOW_ACCESS_TOKEN_MINUTES=30',
     ('PORTFLOW_DEMO_ADMIN_PASSWORD=' + (New-Secret 24)),
     ('PORTFLOW_DEMO_CUSTOMER_PASSWORD=' + (New-Secret 24)),
-    ('PORTFLOW_DEMO_ADMIN_MFA_SECRET=' + (New-Base32Secret 32)),
     'PORTFLOW_DEMO_ADMIN_EMAIL=admin@demo.portflow.local',
     'PORTFLOW_DEMO_CUSTOMER_EMAIL=customer@demo.portflow.local'
 )

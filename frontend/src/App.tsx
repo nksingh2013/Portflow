@@ -54,14 +54,13 @@ import {
   requestContact,
   sessionFromToken,
   setAccessToken,
-  uploadlessMfaConfirm,
 } from "./api";
 import { demoTerminal, demoTerminalId, isPresentationDemo } from "./demo";
 
 type Screen = "overview" | "containers" | "gate" | "yard" | "vessels" | "billing" | "customers" | "portal" | "settings" | "locations" | "contact";
 type ModalType = "walkin" | "visit" | "appointment" | "vessel" | "tariff" | "terminal" | "container" | "customer" | "customer-login" | "portal-request" | "receive" | "release" | "allocate" | null;
 type Notice = { tone: "success" | "error" | "info"; text: string };
-type LoginStage = "sign-in" | "register" | "customer-request" | "customer-request-sent" | "contact" | "contact-sent" | "mfa-setup";
+type LoginStage = "sign-in" | "register" | "customer-request" | "customer-request-sent" | "contact" | "contact-sent";
 
 const navItems: { id: Screen; label: string; icon: LucideIcon; group: string }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard, group: "WORKSPACE" },
@@ -145,11 +144,6 @@ function App() {
   const [search, setSearch] = useState("");
   const [loginError, setLoginError] = useState("");
   const [registerError, setRegisterError] = useState("");
-  const [setupToken, setSetupToken] = useState("");
-  const [mfaSecret, setMfaSecret] = useState("");
-  const [setupEmail, setSetupEmail] = useState("");
-  const [setupOrganizationSlug, setSetupOrganizationSlug] = useState("");
-
   const beginAction = () => {
     if (actionInFlightRef.current) return false;
     actionInFlightRef.current = true;
@@ -303,7 +297,7 @@ function App() {
     const form = new FormData(event.currentTarget);
     setLoginError("");
     try {
-      const result = await login(String(form.get("email")), String(form.get("password")), String(form.get("organization")), String(form.get("mfa") || ""));
+      const result = await login(String(form.get("email")), String(form.get("password")), String(form.get("organization")));
       await finishSignIn(result);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Sign-in failed");
@@ -327,11 +321,8 @@ function App() {
         email: String(form.get("email")),
         password: String(form.get("password")),
       });
-      setSetupToken(result.setup_token);
-      setMfaSecret(result.mfa_secret);
-      setSetupEmail(String(form.get("email")));
-      setSetupOrganizationSlug(result.organization_slug);
-      setStage("mfa-setup");
+      await finishSignIn(result);
+      setNotice({ tone: "success", text: `Workspace created. Save organization slug “${result.organization_slug}” for future sign-in.` });
     } catch (error) {
       setRegisterError(error instanceof Error ? error.message : "Registration failed");
     } finally {
@@ -376,24 +367,6 @@ function App() {
       setStage("contact-sent");
     } catch (error) {
       setRegisterError(error instanceof Error ? error.message : "Contact request could not be sent");
-    } finally {
-      endAction();
-    }
-  };
-
-  const handleMfaSetupConfirm = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!beginAction()) return;
-    const code = new FormData(event.currentTarget).get("mfa_code");
-    setRegisterError("");
-    try {
-      const result = await uploadlessMfaConfirm(setupToken, String(code));
-      await finishSignIn(result);
-      setSetupToken("");
-      setMfaSecret("");
-      setStage("sign-in");
-    } catch (error) {
-      setRegisterError(error instanceof Error ? error.message : "Could not confirm MFA");
     } finally {
       endAction();
     }
@@ -484,14 +457,10 @@ function App() {
         stage={stage}
         busy={busy}
         error={stage === "sign-in" ? loginError : registerError}
-        setupEmail={setupEmail}
-        setupOrganizationSlug={setupOrganizationSlug}
-        mfaSecret={mfaSecret}
         onSignIn={handleSignIn}
         onRegister={handleRegister}
         onCustomerAccessRequest={handleCustomerAccessRequest}
         onContactRequest={handlePublicContactRequest}
-        onConfirmMfa={handleMfaSetupConfirm}
         onStageChange={(next) => { setStage(next); setLoginError(""); setRegisterError(""); }}
         demoMode={meta?.demo_mode ?? false}
       />
@@ -641,28 +610,20 @@ function AuthScreen({
   stage,
   busy,
   error,
-  setupEmail,
-  setupOrganizationSlug,
-  mfaSecret,
   onSignIn,
   onRegister,
   onCustomerAccessRequest,
   onContactRequest,
-  onConfirmMfa,
   onStageChange,
   demoMode,
 }: {
   stage: LoginStage;
   busy: boolean;
   error: string;
-  setupEmail: string;
-  setupOrganizationSlug: string;
-  mfaSecret: string;
   onSignIn: (event: FormEvent<HTMLFormElement>) => void;
   onRegister: (event: FormEvent<HTMLFormElement>) => void;
   onCustomerAccessRequest: (event: FormEvent<HTMLFormElement>) => void;
   onContactRequest: (event: FormEvent<HTMLFormElement>) => void;
-  onConfirmMfa: (event: FormEvent<HTMLFormElement>) => void;
   onStageChange: (stage: LoginStage) => void;
   demoMode: boolean;
 }) {
@@ -683,11 +644,9 @@ function AuthScreen({
             <span className="eyebrow">WELCOME TO PORTFLOW</span><h2>Sign in to your terminal</h2><p className="auth-subtitle">Use your organization account to open the operations workspace.</p>
             {error && <div className="form-error">{error}</div>}
             <form className="form-stack" onSubmit={onSignIn}>
-              <Field label="Organization slug" name="organization" placeholder="your-terminal-group" autoComplete="organization" required />
+              <Field label="Organization slug (if needed)" name="organization" placeholder="Leave blank if you have one organization" autoComplete="organization" />
               <Field label="Work email" name="email" type="email" placeholder="name@company.com" autoComplete="username" required />
               <div className="field"><label htmlFor="login-password">Password</label><div className="password-wrap"><input id="login-password" name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" required /><button type="button" className="show-password" onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Hide" : "Show"}</button></div></div>
-              <Field label="Authenticator code · admins only" name="mfa" placeholder="6-digit code" inputMode="numeric" maxLength={8} />
-              <div className="form-hint">Customer accounts leave this blank; authenticator is required only for administrators.</div>
               <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Signing in…</> : <>Continue <ArrowUpRight size={17} /></>}</button>
             </form>
             {demoMode && <a className="secondary-button demo-preview-link" href="/?demo=1">Open the read-only sample workspace <ArrowUpRight size={15} /></a>}
@@ -697,7 +656,7 @@ function AuthScreen({
             <p className="auth-switch">Need help? <button onClick={() => onStageChange("contact")}>Contact us</button></p>
           </>}
           {stage === "register" && <>
-            <button className="back-link" onClick={() => onStageChange("sign-in")}>← Back to sign in</button><span className="eyebrow">START YOUR WORKSPACE</span><h2>Create an organization</h2><p className="auth-subtitle">Your administrator account will enroll in MFA before first sign-in.</p>
+            <button className="back-link" onClick={() => onStageChange("sign-in")}>← Back to sign in</button><span className="eyebrow">START YOUR WORKSPACE</span><h2>Create an organization</h2><p className="auth-subtitle">Create your workspace and continue with your email and password.</p>
             {error && <div className="form-error">{error}</div>}
             <form className="form-stack form-stack-compact" onSubmit={onRegister}>
               <Field label="Organization name" name="organization_name" placeholder="Western Coast Terminals" required />
@@ -739,16 +698,6 @@ function AuthScreen({
           </>}
           {stage === "contact-sent" && <>
             <span className="eyebrow">MESSAGE SAVED</span><h2>Your message is in the inbox</h2><p className="auth-subtitle">The organization administrator can now see your request in PortFlow. No email notification is sent until an email provider is configured.</p><button className="secondary-button" onClick={() => onStageChange("sign-in")}>Back to sign in</button>
-          </>}
-          {stage === "mfa-setup" && <>
-            <span className="eyebrow">ADMIN MFA SETUP</span><h2>Secure your admin access</h2><p className="auth-subtitle">Add <strong>{setupEmail}</strong> to an authenticator app, then enter the current code below.</p>
-            {error && <div className="form-error">{error}</div>}
-            <div className="secret-card"><span>Organization slug for future sign in</span><code>{setupOrganizationSlug}</code><small>Save this slug with your login details.</small></div>
-            <div className="secret-card"><span>Authenticator setup key</span><code>{mfaSecret}</code><small>Keep this key private. It will not be shown again after enrollment.</small></div>
-            <form className="form-stack" onSubmit={onConfirmMfa}>
-              <Field label="6-digit authenticator code" name="mfa_code" inputMode="numeric" maxLength={8} autoComplete="one-time-code" required />
-              <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Confirming…</> : <>Confirm and continue <ArrowUpRight size={17} /></>}</button>
-            </form>
           </>}
           <div className="auth-legal"><ShieldCheck size={14} /> Tenant access is checked by the server for every request.</div>
         </div>
@@ -887,7 +836,7 @@ function SettingsView({ terminals, catalogCount, canImport, onAdd, onImport }: {
     <PageTitle eyebrow="ORGANIZATION / SETUP" title="Organization setup" subtitle="Manage the terminals available to members of this organization." actions={<>{canImport && <button className="secondary-button" onClick={onImport}><MapPin size={16} /> Add Asian major ports</button>}<button className="primary-button" onClick={onAdd}><Plus size={16} /> Add terminal</button></>} />
     {canImport && <div className="billing-note port-import-note"><Globe2 size={16} /><span>Curated directory: {catalogCount} major commercial ports across Asia, with local time zones. Import skips existing terminals and keeps them unchanged.</span></div>}
     <div className="setup-grid"><section className="panel data-panel"><div className="panel-heading"><div><span className="eyebrow">TERMINAL NETWORK</span><h2>Configured terminals</h2></div><span className="panel-kicker">{terminals.length} LOCATIONS</span></div><div className="terminal-list">{terminals.map((terminal) => <div className="terminal-row" key={terminal.id}><div className="terminal-pin"><MapPin size={17} /></div><div><strong>{terminal.name}</strong><span>{terminal.code} · {terminal.timezone}</span>{terminal.address && <small>{terminal.address}</small>}</div><Badge tone="green">Active</Badge></div>)}{!terminals.length && <EmptyInline title="No terminal configured" detail="Create a terminal location to set up yard, gate and billing operations." />}</div></section>
-      <section className="panel security-panel"><div className="security-icon"><ShieldCheck size={20} /></div><span className="eyebrow">SECURITY BASELINE</span><h2>Server-verified tenant access</h2><p>Each request resolves an active membership and sets tenant context for the database transaction. PostgreSQL RLS policies fail closed when that context is absent.</p><div className="security-check"><Check size={15} /><span>Admin MFA enforced with TOTP</span></div><div className="security-check"><Check size={15} /><span>Argon2id password hashes</span></div><div className="security-check"><Check size={15} /><span>Terminal-scoped staff access</span></div><div className="security-check"><Check size={15} /><span>Audit records for operational actions</span></div><span className="security-footnote">Before production: use non-owner database credentials, TLS, backups and key rotation.</span></section></div>
+      <section className="panel security-panel"><div className="security-icon"><ShieldCheck size={20} /></div><span className="eyebrow">SECURITY BASELINE</span><h2>Server-verified tenant access</h2><p>Each request resolves an active membership and sets tenant context for the database transaction. PostgreSQL RLS policies fail closed when that context is absent.</p><div className="security-check"><Check size={15} /><span>Email and password sign-in · authenticator disabled</span></div><div className="security-check"><Check size={15} /><span>Argon2id password hashes</span></div><div className="security-check"><Check size={15} /><span>Terminal-scoped staff access</span></div><div className="security-check"><Check size={15} /><span>Audit records for operational actions</span></div><span className="security-footnote">This demo uses password-only sign-in. Do not use it for real operational data; production should add MFA, non-owner database credentials, TLS, backups and key rotation.</span></section></div>
   </>;
 }
 

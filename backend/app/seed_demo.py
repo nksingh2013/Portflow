@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
-import pyotp
 from sqlalchemy import select
 
 from app.config import settings
@@ -35,8 +34,7 @@ def seed_demo() -> None:
         raise SystemExit("Demo seeding is disabled. Set PORTFLOW_DEMO_MODE=true only in a local or test environment.")
     admin_password = settings.demo_admin_password.get_secret_value() if settings.demo_admin_password else ""
     customer_password = settings.demo_customer_password.get_secret_value() if settings.demo_customer_password else ""
-    mfa_secret = settings.demo_admin_mfa_secret.get_secret_value() if settings.demo_admin_mfa_secret else ""
-    if not admin_password or not customer_password or not mfa_secret:
+    if not admin_password or not customer_password:
         raise SystemExit("Run scripts/bootstrap-env.ps1 first; it creates local-only demo credentials in .env.")
 
     db = SessionLocal()
@@ -50,7 +48,7 @@ def seed_demo() -> None:
                 organization = db.get(Organization, membership.organization_id)
                 print(f"Demo data already exists for {organization.name if organization else 'PortFlow Demo'}; no changes made.")
                 print(f"Administrator login: {settings.demo_admin_email} · organization slug: portflow-demo")
-                print("Demo passwords and MFA secret are stored only in the local .env file.")
+                print("Demo passwords are stored only in the local .env file.")
                 return
 
         organization_id = uuid4()
@@ -91,8 +89,6 @@ def seed_demo() -> None:
             email=settings.demo_admin_email.lower(),
             display_name="PortFlow Demo Admin",
             password_hash=hash_password(admin_password),
-            mfa_secret=mfa_secret,
-            mfa_enabled=True,
         )
         admin_membership = Membership(
             id=uuid4(),
@@ -301,7 +297,7 @@ def seed_demo() -> None:
         print(f"Organization: {organization.slug}")
         print(f"Admin login: {settings.demo_admin_email}")
         print(f"Customer portal login: {settings.demo_customer_email}")
-        print("Passwords and the admin MFA secret are stored in local .env; values were not echoed.")
+        print("Demo passwords are stored in local .env; values were not echoed.")
         print("Records are demo samples only. Do not use this seed outside local/test environments.")
     except Exception:
         db.rollback()

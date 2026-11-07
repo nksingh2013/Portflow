@@ -30,7 +30,6 @@ class Settings(BaseSettings):
     demo_admin_password: SecretStr | None = None
     demo_customer_email: str = "customer@demo.portflow.local"
     demo_customer_password: SecretStr | None = None
-    demo_admin_mfa_secret: SecretStr | None = None
 
     @field_validator("database_url", mode="before")
     @classmethod

@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Callable
 from uuid import UUID
 
-import pyotp
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
@@ -66,8 +65,6 @@ def get_current_principal(
         raise unauthorized
     if payload.get("role") != membership.role:
         raise unauthorized
-    if membership.role == "organization_admin" and not user.mfa_enabled:
-        raise HTTPException(status_code=403, detail="Administrator MFA enrollment is required")
     return Principal(user=user, membership=membership)
 
 
@@ -78,11 +75,3 @@ def require_roles(*roles: str) -> Callable:
         return principal
 
     return dependency
-
-
-def verify_totp(user: User, code: str | None) -> bool:
-    if not user.mfa_enabled:
-        return False
-    if not code or not user.mfa_secret:
-        return False
-    return pyotp.TOTP(user.mfa_secret).verify(code.strip(), valid_window=1)
