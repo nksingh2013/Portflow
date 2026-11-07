@@ -155,3 +155,50 @@ def test_appointment_creation_returns_saved_record(client, database):
     assert response.status_code == 201, response.text
     assert response.json()["vehicle_number"] == "MH 01 AB 1234"
     assert response.json()["notes"] == "Test appointment"
+
+
+def test_yard_allocation_requires_configured_slot_then_assigns_and_marks_it_occupied(client, database):
+    terminal_id = str(database["terminal"].id)
+
+    first_visit = client.post("/api/v1/gate/walk-ins", json={
+        "terminal_id": terminal_id,
+        "customer_id": str(database["customer"].id),
+        "container_number": "YARD1234567",
+        "category": "DRY",
+        "idempotency_key": "yard-walk-in-request-0001",
+    })
+    assert first_visit.status_code == 201, first_visit.text
+    visit_id = first_visit.json()["visit"]["id"]
+
+    no_slots = client.get(f"/api/v1/yard/suggestions?visit_id={visit_id}")
+    assert no_slots.status_code == 200, no_slots.text
+    assert no_slots.json() == []
+
+    created_slot = client.post("/api/v1/yard/slots", json={
+        "terminal_id": terminal_id,
+        "code": "A-01-01-01",
+        "zone": "GENERAL",
+        "block": "A",
+        "bay": 1,
+        "row": 1,
+        "tier": 1,
+        "container_category": "DRY",
+    })
+    assert created_slot.status_code == 201, created_slot.text
+    slot_id = created_slot.json()["id"]
+
+    suggestions = client.get(f"/api/v1/yard/suggestions?visit_id={visit_id}")
+    assert suggestions.status_code == 200, suggestions.text
+    assert [item["slot_id"] for item in suggestions.json()] == [slot_id]
+
+    allocation = client.post("/api/v1/yard/allocate", json={"visit_id": visit_id, "slot_id": slot_id})
+    assert allocation.status_code == 200, allocation.text
+    assert allocation.json()["visit"]["yard_slot_id"] == slot_id
+    assert allocation.json()["movement"]["movement_type"] == "yard_in"
+    assert allocation.json()["movement"]["to_slot_id"] == slot_id
+
+    yard = client.get(f"/api/v1/yard/slots?terminal_id={terminal_id}")
+    assert yard.status_code == 200, yard.text
+    assert yard.json()[0]["occupied"] is True
+    assert yard.json()[0]["current_visit_id"] == visit_id
+    assert yard.json()[0]["current_container_number"] == "YARD1234567"
