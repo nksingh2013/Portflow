@@ -4,6 +4,8 @@ import type {
   Customer,
   DashboardSummary,
   Invoice,
+  LiveContainerLocation,
+  PortCatalogEntry,
   Tariff,
   Terminal,
   VesselCall,
@@ -89,10 +91,42 @@ const summary: DashboardSummary = {
   visits: visits.length,
 };
 
+const demoPorts: PortCatalogEntry[] = [
+  { code: "IN-JNPA", name: "Jawaharlal Nehru Port Authority", city: "Navi Mumbai", country: "India", region: "South Asia", timezone: "Asia/Kolkata" },
+  { code: "LK-CMB", name: "Port of Colombo", city: "Colombo", country: "Sri Lanka", region: "South Asia", timezone: "Asia/Colombo" },
+  { code: "SG-SIN", name: "Port of Singapore", city: "Singapore", country: "Singapore", region: "Southeast Asia", timezone: "Asia/Singapore" },
+  { code: "CN-SHA", name: "Shanghai Yangshan Port", city: "Shanghai", country: "China", region: "East Asia", timezone: "Asia/Shanghai" },
+  { code: "KR-PUS", name: "Busan Port", city: "Busan", country: "South Korea", region: "East Asia", timezone: "Asia/Seoul" },
+  { code: "JP-YOK", name: "Port of Yokohama", city: "Yokohama", country: "Japan", region: "East Asia", timezone: "Asia/Tokyo" },
+  { code: "AE-JEA", name: "Jebel Ali Port", city: "Dubai", country: "United Arab Emirates", region: "West Asia", timezone: "Asia/Dubai" },
+  { code: "OM-SLL", name: "Port of Salalah", city: "Salalah", country: "Oman", region: "West Asia", timezone: "Asia/Muscat" },
+];
+
+const demoLocations: LiveContainerLocation[] = visits.map((visit) => {
+  const container = containers.find((item) => item.id === visit.container_id)!;
+  const customer = customers.find((item) => item.id === container.customer_id)!;
+  const slot = slots.find((item) => item.id === visit.yard_slot_id);
+  return {
+    visit_id: visit.id,
+    container_number: container.container_number,
+    customer_name: customer.name,
+    terminal_id: demoTerminalId,
+    port_name: demoTerminal.name,
+    port_address: demoTerminal.address,
+    timezone: demoTerminal.timezone,
+    yard_slot: slot?.code ?? null,
+    status: visit.status,
+    current_location: visit.status === "released" ? `Exited · ${demoTerminal.name}` : slot ? `Yard · ${slot.code}` : visit.status === "expected" ? `Gate · ${demoTerminal.name}` : `Terminal yard · ${demoTerminal.name}`,
+    last_updated_at: visit.custody_released_at ?? visit.custody_received_at ?? "2026-11-06T09:00:00+00:00",
+  };
+});
+
 export function demoResponse(path: string): unknown {
   const route = path.split("?", 1)[0];
   switch (route) {
     case "/terminals": return [demoTerminal];
+    case "/ports/catalog": return demoPorts;
+    case "/locations/containers": return demoLocations;
     case "/dashboard/summary": return summary;
     case "/containers": return containers;
     case "/visits": return visits;

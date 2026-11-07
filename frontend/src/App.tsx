@@ -13,6 +13,8 @@ import {
   Clock3,
   Container as ContainerIcon,
   FileText,
+  Globe2,
+  Mail,
   LayoutDashboard,
   LogOut,
   MapPin,
@@ -33,8 +35,11 @@ import {
   type Container,
   type Customer,
   type CustomerPortalAccessRequest,
+  type ContactInquiry,
   type DashboardSummary,
   type Invoice,
+  type LiveContainerLocation,
+  type PortCatalogEntry,
   type Session,
   type Tariff,
   type Terminal,
@@ -46,16 +51,17 @@ import {
   post,
   register,
   requestCustomerAccess,
+  requestContact,
   sessionFromToken,
   setAccessToken,
   uploadlessMfaConfirm,
 } from "./api";
 import { demoTerminal, demoTerminalId, isPresentationDemo } from "./demo";
 
-type Screen = "overview" | "containers" | "gate" | "yard" | "vessels" | "billing" | "customers" | "portal" | "settings";
+type Screen = "overview" | "containers" | "gate" | "yard" | "vessels" | "billing" | "customers" | "portal" | "settings" | "locations" | "contact";
 type ModalType = "walkin" | "visit" | "appointment" | "vessel" | "tariff" | "terminal" | "container" | "customer" | "customer-login" | "portal-request" | "receive" | "release" | "allocate" | null;
 type Notice = { tone: "success" | "error" | "info"; text: string };
-type LoginStage = "sign-in" | "register" | "customer-request" | "customer-request-sent" | "mfa-setup";
+type LoginStage = "sign-in" | "register" | "customer-request" | "customer-request-sent" | "contact" | "contact-sent" | "mfa-setup";
 
 const navItems: { id: Screen; label: string; icon: LucideIcon; group: string }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard, group: "WORKSPACE" },
@@ -65,6 +71,8 @@ const navItems: { id: Screen; label: string; icon: LucideIcon; group: string }[]
   { id: "vessels", label: "Vessel calls", icon: Ship, group: "OPERATIONS" },
   { id: "billing", label: "Billing", icon: CircleDollarSign, group: "MANAGEMENT" },
   { id: "customers", label: "Customers", icon: Users, group: "MANAGEMENT" },
+  { id: "locations", label: "Locations", icon: MapPin, group: "OPERATIONS" },
+  { id: "contact", label: "Contact inbox", icon: Mail, group: "MANAGEMENT" },
 ];
 
 const money = (value: string | number | undefined) =>
@@ -114,6 +122,9 @@ function App() {
   const [visits, setVisits] = useState<Visit[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [portalRequests, setPortalRequests] = useState<CustomerPortalAccessRequest[]>([]);
+  const [portCatalog, setPortCatalog] = useState<PortCatalogEntry[]>([]);
+  const [liveLocations, setLiveLocations] = useState<LiveContainerLocation[]>([]);
+  const [contactRequests, setContactRequests] = useState<ContactInquiry[]>([]);
   const [vessels, setVessels] = useState<VesselCall[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [slots, setSlots] = useState<YardSlot[]>([]);
@@ -223,6 +234,51 @@ function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [session?.role, session?.token]);
 
+  useEffect(() => {
+    if (!session || !terminalId) {
+      setPortCatalog([]);
+      setLiveLocations([]);
+      return;
+    }
+    let cancelled = false;
+    const refreshLocations = async () => {
+      try {
+        const [catalog, locations] = await Promise.all([
+          get<PortCatalogEntry[]>("/ports/catalog"),
+          get<LiveContainerLocation[]>(`/locations/containers?terminal_id=${terminalId}`),
+        ]);
+        if (!cancelled) {
+          setPortCatalog(catalog);
+          setLiveLocations(locations);
+        }
+      } catch (error) {
+        if (!cancelled) setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not load port locations" });
+      }
+    };
+    void refreshLocations();
+    const timer = window.setInterval(() => void refreshLocations(), 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [session?.role, session?.token, terminalId]);
+
+  useEffect(() => {
+    if (!session || session.role !== "organization_admin") {
+      setContactRequests([]);
+      return;
+    }
+    let cancelled = false;
+    const refreshContactRequests = async () => {
+      try {
+        const requests = await get<ContactInquiry[]>("/contact-requests");
+        if (!cancelled) setContactRequests(requests);
+      } catch {
+        if (!cancelled) setContactRequests([]);
+      }
+    };
+    void refreshContactRequests();
+    const timer = window.setInterval(() => void refreshContactRequests(), 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [session?.role, session?.token]);
+
   const finishSignIn = async (tokenResponse: Awaited<ReturnType<typeof login>>) => {
     const next = sessionFromToken(tokenResponse);
     setAccessToken(next.token);
@@ -304,6 +360,27 @@ function App() {
     }
   };
 
+  const handlePublicContactRequest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!beginAction()) return;
+    const form = new FormData(event.currentTarget);
+    setRegisterError("");
+    try {
+      await requestContact({
+        organization_slug: String(form.get("organization_slug")).trim().toLowerCase(),
+        contact_name: String(form.get("contact_name")).trim(),
+        email: String(form.get("email")).trim(),
+        subject: String(form.get("subject")).trim(),
+        message: String(form.get("message")).trim(),
+      });
+      setStage("contact-sent");
+    } catch (error) {
+      setRegisterError(error instanceof Error ? error.message : "Contact request could not be sent");
+    } finally {
+      endAction();
+    }
+  };
+
   const handleMfaSetupConfirm = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!beginAction()) return;
@@ -332,7 +409,7 @@ function App() {
     setStage("sign-in");
   };
 
-  const runAction = async (action: () => Promise<unknown>, success: string) => {
+  const runAction = async (action: () => Promise<unknown>, success: string | ((result: unknown) => string)) => {
     if (session?.role === "demo_viewer") {
       setNotice({ tone: "info", text: "Read-only presentation demo · changes are disabled." });
       return;
@@ -340,8 +417,9 @@ function App() {
     if (!beginAction()) return;
     setNotice(null);
     try {
-      await action();
-      setNotice({ tone: "success", text: success });
+      const result = await action();
+      const successMessage = typeof success === "function" ? success(result) : success;
+      setNotice({ tone: "success", text: successMessage });
       setModal(null);
       setSelectedVisit(null);
       setSelectedCustomer(null);
@@ -349,11 +427,18 @@ function App() {
       if (session?.role === "organization_admin" && selectedScreen === "customers") {
         try { setPortalRequests(await get<CustomerPortalAccessRequest[]>("/portal-access-requests")); } catch { /* Keep the last visible request list until the next poll. */ }
       }
+      if (session?.role === "organization_admin" && selectedScreen === "settings") {
+        try { setTerminals(await get<Terminal[]>("/terminals")); } catch { /* Keep the last visible terminal list until the next poll. */ }
+      }
+      if (session?.role === "organization_admin" && selectedScreen === "contact") {
+        try { setContactRequests(await get<ContactInquiry[]>("/contact-requests")); } catch { /* Keep the last visible inbox until the next poll. */ }
+      }
       if (session && terminalId) {
         const refreshed = await loadWorkspace(session, terminalId);
         if (!refreshed) {
-          setNotice({ tone: "success", text: `${success} The list could not refresh; reload to see the latest records.` });
+          setNotice({ tone: "success", text: `${successMessage} The list could not refresh; reload to see the latest records.` });
         }
+        try { setLiveLocations(await get<LiveContainerLocation[]>(`/locations/containers?terminal_id=${terminalId}`)); } catch { /* The polling refresh will retry without hiding the completed action. */ }
       }
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Action could not be completed" });
@@ -405,6 +490,7 @@ function App() {
         onSignIn={handleSignIn}
         onRegister={handleRegister}
         onCustomerAccessRequest={handleCustomerAccessRequest}
+        onContactRequest={handlePublicContactRequest}
         onConfirmMfa={handleMfaSetupConfirm}
         onStageChange={(next) => { setStage(next); setLoginError(""); setRegisterError(""); }}
         demoMode={meta?.demo_mode ?? false}
@@ -417,7 +503,9 @@ function App() {
   const nav = customerMode ? [
     { id: "portal" as Screen, label: "My containers", icon: ContainerIcon, group: "CUSTOMER" },
     { id: "billing" as Screen, label: "Invoices", icon: FileText, group: "CUSTOMER" },
-  ] : navItems;
+    { id: "locations" as Screen, label: "Locations", icon: MapPin, group: "CUSTOMER" },
+    { id: "contact" as Screen, label: "Contact us", icon: Mail, group: "CUSTOMER" },
+  ] : navItems.map((item) => item.id === "contact" && session.role !== "organization_admin" ? { ...item, label: "Contact us" } : item);
 
   const openModal = (name: ModalType) => {
     if (readOnlyDemo) {
@@ -440,7 +528,7 @@ function App() {
         <nav className="sidebar-nav" aria-label="Main navigation">
           {nav.map((item, index) => {
             const previous = nav[index - 1];
-            return <div key={item.id}>{(!previous || previous.group !== item.group) && <div className="nav-group-label">{item.group}</div>}<button className={`nav-link ${selectedScreen === item.id ? "nav-link-active" : ""}`} onClick={() => { setScreen(item.id); setMobileMenuOpen(false); }}><item.icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.id === "gate" && summary?.expected ? <span className="nav-count">{summary.expected}</span> : item.id === "customers" && portalRequests.length ? <span className="nav-count">{portalRequests.length}</span> : null}</button></div>;
+            return <div key={item.id}>{(!previous || previous.group !== item.group) && <div className="nav-group-label">{item.group}</div>}<button className={`nav-link ${selectedScreen === item.id ? "nav-link-active" : ""}`} onClick={() => { setScreen(item.id); setMobileMenuOpen(false); }}><item.icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.id === "gate" && summary?.expected ? <span className="nav-count">{summary.expected}</span> : item.id === "customers" && portalRequests.length ? <span className="nav-count">{portalRequests.length}</span> : item.id === "contact" && contactRequests.length ? <span className="nav-count">{contactRequests.length}</span> : null}</button></div>;
           })}
         </nav>
         <div className="sidebar-bottom">
@@ -466,6 +554,7 @@ function App() {
           {readOnlyDemo ? <div className="demo-banner demo-readonly-banner"><span className="demo-pulse" /><strong>READ-ONLY PRESENTATION</strong><span>Fictional sample data · changes are disabled</span><a href="/?login=1">Administrator sign in</a></div> : meta?.demo_mode && <div className="demo-banner"><span className="demo-pulse" /><strong>DEMO ENVIRONMENT</strong><span>No live port, email, or payment integrations</span></div>}
           {notice && <div className={`notice notice-${notice.tone}`}><span>{notice.text}</span><button onClick={() => setNotice(null)} aria-label="Dismiss message"><X size={15} /></button></div>}
           {session.role === "organization_admin" && portalRequests.length > 0 && selectedScreen !== "customers" && <div className="notice notice-info"><span>{portalRequests.length} customer access request{portalRequests.length === 1 ? "" : "s"} need review.</span><button className="text-button" onClick={() => setScreen("customers")}>Review requests <ArrowUpRight size={14} /></button></div>}
+          {session.role === "organization_admin" && contactRequests.length > 0 && selectedScreen !== "contact" && <div className="notice notice-info"><span>{contactRequests.length} contact message{contactRequests.length === 1 ? "" : "s"} need review.</span><button className="text-button" onClick={() => setScreen("contact")}>Open inbox <ArrowUpRight size={14} /></button></div>}
           {loading && <div className="loading-line"><span />Refreshing terminal data…</div>}
           {selectedScreen === "overview" && !customerMode && <OverviewView summary={summary} rows={visitRows} vessels={vessels} slots={slots} onWalkIn={() => openModal("walkin")} onAppointment={() => openModal("appointment")} onNavigate={setScreen} />}
           {selectedScreen === "containers" && !customerMode && <ContainersView rows={filteredVisits} search={search} setSearch={setSearch} onRegister={() => openModal("container")} onWalkIn={() => openModal("walkin")} onCreateFirstVisit={() => openModal("visit")} onReceive={(visit) => { setSelectedVisit(visit); openModal("receive"); }} onRelease={(visit) => { setSelectedVisit(visit); openModal("release"); }} onAllocate={openAllocation} onNavigate={setScreen} />}
@@ -475,7 +564,18 @@ function App() {
           {selectedScreen === "billing" && (customerMode ? <CustomerBilling invoices={portalInvoices} /> : <BillingView tariffs={tariffs} invoices={invoices} visits={visits} onNewTariff={() => openModal("tariff")} onPublish={(id) => void runAction(() => post(`/tariffs/versions/${id}/publish`, {}), "Tariff version published and locked.")} onGenerate={(id) => void runAction(() => post(`/invoices/generate/${id}`, {}), "Operational invoice generated.")} />)}
           {selectedScreen === "customers" && !customerMode && <CustomersView customers={customers} visitRows={visitRows} portalRequests={session.role === "organization_admin" ? portalRequests : []} canManagePortal={session.role === "organization_admin"} onAdd={() => openModal("customer")} onApproveRequest={(request) => { setSelectedPortalRequest(request); openModal("portal-request"); }} onRejectRequest={(requestId) => void runAction(() => post(`/portal-access-requests/${requestId}/reject`, {}), "Customer access request declined.")} onCreatePortalLogin={(customer) => { setSelectedCustomer(customer); openModal("customer-login"); }} />}
           {selectedScreen === "portal" && customerMode && <PortalView rows={portalContainers} invoices={portalInvoices} />}
-          {selectedScreen === "settings" && !customerMode && <SettingsView terminals={terminals} onAdd={() => openModal("terminal")} />}
+          {selectedScreen === "locations" && <LocationsView catalog={portCatalog} rows={liveLocations} />}
+          {selectedScreen === "contact" && <ContactView
+            isAdmin={session.role === "organization_admin"}
+            organizationSlug={session.organizationSlug}
+            requests={contactRequests}
+            onResolve={(requestId) => void runAction(() => post(`/contact-requests/${requestId}/resolve`, {}), "Contact request marked resolved.")}
+            onSubmit={(payload) => void runAction(() => post("/auth/contact-requests", payload), "Your message was saved to the organization inbox. Email delivery is not configured.")}
+          />}
+          {selectedScreen === "settings" && !customerMode && <SettingsView terminals={terminals} catalogCount={portCatalog.length} canImport={session.role === "organization_admin"} onAdd={() => openModal("terminal")} onImport={() => void runAction(
+            () => post<{ created_count: number; skipped_count: number; total_catalog_count: number }>("/terminals/import-asian-ports", {}),
+            (result) => `Added ${(result as { created_count: number }).created_count} ports; ${(result as { skipped_count: number }).skipped_count} already existed and were kept.`,
+          )} />}
           <footer className="page-footer"><span>PortFlow Terminal Operations</span><span><ShieldCheck size={13} /> Tenant context verified · {activeTerminal?.timezone ?? "Asia/Kolkata"}</span><a href="/api/docs" target="_blank" rel="noreferrer">API reference ↗</a></footer>
         </div>
       </main>
@@ -547,6 +647,7 @@ function AuthScreen({
   onSignIn,
   onRegister,
   onCustomerAccessRequest,
+  onContactRequest,
   onConfirmMfa,
   onStageChange,
   demoMode,
@@ -560,6 +661,7 @@ function AuthScreen({
   onSignIn: (event: FormEvent<HTMLFormElement>) => void;
   onRegister: (event: FormEvent<HTMLFormElement>) => void;
   onCustomerAccessRequest: (event: FormEvent<HTMLFormElement>) => void;
+  onContactRequest: (event: FormEvent<HTMLFormElement>) => void;
   onConfirmMfa: (event: FormEvent<HTMLFormElement>) => void;
   onStageChange: (stage: LoginStage) => void;
   demoMode: boolean;
@@ -592,6 +694,7 @@ function AuthScreen({
             <button className="provider-button" disabled title="Google OAuth is not configured"><span className="google-mark">G</span> Continue with Google <span className="provider-note">Not configured</span></button>
             <p className="auth-switch">Customer access? <button onClick={() => onStageChange("customer-request")}>Request a login</button></p>
             <p className="auth-switch">New to PortFlow? <button onClick={() => onStageChange("register")}>Set up an organization</button></p>
+            <p className="auth-switch">Need help? <button onClick={() => onStageChange("contact")}>Contact us</button></p>
           </>}
           {stage === "register" && <>
             <button className="back-link" onClick={() => onStageChange("sign-in")}>← Back to sign in</button><span className="eyebrow">START YOUR WORKSPACE</span><h2>Create an organization</h2><p className="auth-subtitle">Your administrator account will enroll in MFA before first sign-in.</p>
@@ -621,6 +724,21 @@ function AuthScreen({
           </>}
           {stage === "customer-request-sent" && <>
             <span className="eyebrow">REQUEST SENT</span><h2>Your request is with the administrator</h2><p className="auth-subtitle">The administrator will see it in the Customers workspace and contact you to provide your sign-in details. This demo does not send automatic email notifications.</p><div className="form-hint"><ShieldCheck size={14} /> Customer sign-in does not require an authenticator code.</div><button className="secondary-button" onClick={() => onStageChange("sign-in")}>Back to sign in</button>
+          </>}
+          {stage === "contact" && <>
+            <button className="back-link" onClick={() => onStageChange("sign-in")}>← Back to sign in</button><span className="eyebrow">CONTACT THE ORGANIZATION</span><h2>Send us a message</h2><p className="auth-subtitle">Your message will appear in the organization’s in-app inbox. Email delivery is not configured.</p>
+            {error && <div className="form-error">{error}</div>}
+            <form className="form-stack form-stack-compact" onSubmit={onContactRequest}>
+              <Field label="Organization slug" name="organization_slug" placeholder="Ask your terminal contact" required autoComplete="organization" />
+              <Field label="Your name" name="contact_name" placeholder="Your name" required autoComplete="name" />
+              <Field label="Email address" name="email" type="email" placeholder="name@company.com" required autoComplete="email" />
+              <Field label="Subject" name="subject" placeholder="How can we help?" required minLength={2} maxLength={180} />
+              <div className="field"><label htmlFor="public-contact-message">Message</label><textarea id="public-contact-message" name="message" rows={4} required minLength={5} maxLength={2000} placeholder="Write your message" /></div>
+              <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Sending…</> : <>Send message <ArrowUpRight size={17} /></>}</button>
+            </form>
+          </>}
+          {stage === "contact-sent" && <>
+            <span className="eyebrow">MESSAGE SAVED</span><h2>Your message is in the inbox</h2><p className="auth-subtitle">The organization administrator can now see your request in PortFlow. No email notification is sent until an email provider is configured.</p><button className="secondary-button" onClick={() => onStageChange("sign-in")}>Back to sign in</button>
           </>}
           {stage === "mfa-setup" && <>
             <span className="eyebrow">ADMIN MFA SETUP</span><h2>Secure your admin access</h2><p className="auth-subtitle">Add <strong>{setupEmail}</strong> to an authenticator app, then enter the current code below.</p>
@@ -764,11 +882,68 @@ function CustomerBilling({ invoices }: { invoices: Invoice[] }) {
   return <section className="panel data-panel customer-invoices"><div className="panel-heading"><div><span className="eyebrow">OPERATIONAL BILLING</span><h2>Issued invoices</h2></div><span className="panel-kicker">INR</span></div><div className="table-wrap"><table><thead><tr><th>INVOICE</th><th>ISSUED</th><th>SUBTOTAL</th><th>TAX</th><th>TOTAL</th></tr></thead><tbody>{invoices.map((invoice) => <tr key={invoice.id}><td><div className="table-primary">{invoice.invoice_number}</div></td><td>{dateOnly(invoice.issued_at)}</td><td>{money(invoice.subtotal)}</td><td>{money(invoice.tax_total)}</td><td><strong>{money(invoice.total)}</strong></td></tr>)}{!invoices.length && <EmptyTable columns={5} title="No invoices issued" detail="New operational invoices will appear here after custody release and tariff calculation." />}</tbody></table></div></section>;
 }
 
-function SettingsView({ terminals, onAdd }: { terminals: Terminal[]; onAdd: () => void }) {
+function SettingsView({ terminals, catalogCount, canImport, onAdd, onImport }: { terminals: Terminal[]; catalogCount: number; canImport: boolean; onAdd: () => void; onImport: () => void }) {
   return <>
-    <PageTitle eyebrow="ORGANIZATION / SETUP" title="Organization setup" subtitle="Manage the terminals available to members of this organization." actions={<button className="primary-button" onClick={onAdd}><Plus size={16} /> Add terminal</button>} />
+    <PageTitle eyebrow="ORGANIZATION / SETUP" title="Organization setup" subtitle="Manage the terminals available to members of this organization." actions={<>{canImport && <button className="secondary-button" onClick={onImport}><MapPin size={16} /> Add Asian major ports</button>}<button className="primary-button" onClick={onAdd}><Plus size={16} /> Add terminal</button></>} />
+    {canImport && <div className="billing-note port-import-note"><Globe2 size={16} /><span>Curated directory: {catalogCount} major commercial ports across Asia, with local time zones. Import skips existing terminals and keeps them unchanged.</span></div>}
     <div className="setup-grid"><section className="panel data-panel"><div className="panel-heading"><div><span className="eyebrow">TERMINAL NETWORK</span><h2>Configured terminals</h2></div><span className="panel-kicker">{terminals.length} LOCATIONS</span></div><div className="terminal-list">{terminals.map((terminal) => <div className="terminal-row" key={terminal.id}><div className="terminal-pin"><MapPin size={17} /></div><div><strong>{terminal.name}</strong><span>{terminal.code} · {terminal.timezone}</span>{terminal.address && <small>{terminal.address}</small>}</div><Badge tone="green">Active</Badge></div>)}{!terminals.length && <EmptyInline title="No terminal configured" detail="Create a terminal location to set up yard, gate and billing operations." />}</div></section>
       <section className="panel security-panel"><div className="security-icon"><ShieldCheck size={20} /></div><span className="eyebrow">SECURITY BASELINE</span><h2>Server-verified tenant access</h2><p>Each request resolves an active membership and sets tenant context for the database transaction. PostgreSQL RLS policies fail closed when that context is absent.</p><div className="security-check"><Check size={15} /><span>Admin MFA enforced with TOTP</span></div><div className="security-check"><Check size={15} /><span>Argon2id password hashes</span></div><div className="security-check"><Check size={15} /><span>Terminal-scoped staff access</span></div><div className="security-check"><Check size={15} /><span>Audit records for operational actions</span></div><span className="security-footnote">Before production: use non-owner database credentials, TLS, backups and key rotation.</span></section></div>
+  </>;
+}
+
+function LocationsView({ catalog, rows }: { catalog: PortCatalogEntry[]; rows: LiveContainerLocation[] }) {
+  const [search, setSearch] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const term = search.trim().toLowerCase();
+  const ports = catalog.filter((port) => !term || [port.name, port.city, port.country, port.region].some((value) => value.toLowerCase().includes(term)));
+  const formatPortTime = (timezone: string) => {
+    try { return new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: timezone }).format(now); }
+    catch { return "Time zone unavailable"; }
+  };
+  return <>
+    <PageTitle eyebrow="LOCATIONS / CONTAINER MOVEMENT" title="Port & container locations" subtitle="See the latest recorded terminal location and local time for ports in the Asian commercial directory." actions={<span className="readonly-pill"><Clock3 size={14} /> Port-local times</span>} />
+    <div className="billing-note location-limitation"><Activity size={16} /><span>Container positions come from the latest gate and yard records. GPS/AIS tracking is not connected, so updates depend on terminal staff recording movements.</span></div>
+    <section className="panel data-panel location-panel"><div className="panel-heading"><div><span className="eyebrow">LATEST OPERATIONAL RECORD</span><h2>Container locations</h2></div><span className="panel-kicker">{rows.length} CONTAINERS</span></div><div className="table-wrap"><table><thead><tr><th>CONTAINER / CUSTOMER</th><th>PORT / TERMINAL</th><th>RECORDED LOCATION</th><th>STATUS</th><th>LAST UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.visit_id}><td><div className="container-cell"><span className="container-glyph"><ContainerIcon size={14} /></span><div><strong>{row.container_number}</strong><small>{row.customer_name}</small></div></div></td><td><div className="table-primary">{row.port_name}</div><span className="table-subtle">{row.port_address || "Address not set"}</span></td><td>{row.current_location}</td><td><Badge tone={row.status === "in_terminal" ? "green" : row.status === "released" ? "blue" : "amber"}>{row.status.replaceAll("_", " ")}</Badge></td><td><div className="table-primary">{dateTime(row.last_updated_at)}</div><span className="table-subtle">{formatPortTime(row.timezone)}</span></td></tr>)}{!rows.length && <EmptyTable columns={5} title="No container location records" detail="Once a visit is recorded for this terminal, its latest gate or yard location will appear here." />}</tbody></table></div></section>
+    <section className="panel data-panel port-directory"><div className="panel-heading"><div><span className="eyebrow">ASIA / MAJOR COMMERCIAL PORTS</span><h2>Port directory</h2></div><span className="panel-kicker">{ports.length} OF {catalog.length}</span></div><div className="summary-inline"><div className="search-control"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search port, city or country" /></div></div><div className="port-grid">{ports.map((port) => <article className="port-card" key={port.code}><div className="port-card-icon"><MapPin size={16} /></div><div className="port-card-main"><strong>{port.name}</strong><span>{port.city}, {port.country}</span></div><div className="port-card-time"><small>{port.region} · {port.timezone}</small><strong>{formatPortTime(port.timezone)}</strong></div></article>)}{!ports.length && <EmptyInline title="No matching ports" detail="Try another port, city, or country name." />}</div></section>
+  </>;
+}
+
+function ContactView({ isAdmin, organizationSlug, requests, onResolve, onSubmit }: {
+  isAdmin: boolean;
+  organizationSlug: string;
+  requests: ContactInquiry[];
+  onResolve: (requestId: string) => void;
+  onSubmit: (payload: { organization_slug: string; contact_name: string; email: string; subject: string; message: string }) => void;
+}) {
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onSubmit({
+      organization_slug: organizationSlug,
+      contact_name: String(form.get("contact_name")).trim(),
+      email: String(form.get("email")).trim(),
+      subject: String(form.get("subject")).trim(),
+      message: String(form.get("message")).trim(),
+    });
+  };
+  if (isAdmin) return <>
+    <PageTitle eyebrow="MANAGEMENT / CUSTOMER MESSAGES" title="Contact inbox" subtitle="Messages sent by visitors and customer accounts are stored here for administrator review." actions={<span className="readonly-pill"><Mail size={14} /> {requests.length} open</span>} />
+    <div className="billing-note"><ShieldCheck size={16} /><span>Requests are visible in this inbox. Email sending and automatic email alerts are not configured.</span></div>
+    <section className="panel data-panel"><div className="panel-heading"><div><span className="eyebrow">ORGANIZATION INBOX</span><h2>Open messages</h2></div><span className="panel-kicker">{requests.length} OPEN</span></div><div className="table-wrap"><table><thead><tr><th>CONTACT</th><th>SUBJECT / MESSAGE</th><th>RECEIVED</th><th>ACTION</th></tr></thead><tbody>{requests.map((request) => <tr key={request.id}><td><div className="table-primary">{request.contact_name}</div><span className="table-subtle">{request.email}</span></td><td><div className="table-primary">{request.subject}</div><span className="table-subtle contact-message-text">{request.message}</span></td><td>{dateTime(request.created_at)}</td><td><button className="secondary-button button-small" onClick={() => onResolve(request.id)}><Check size={14} /> Mark resolved</button></td></tr>)}{!requests.length && <EmptyTable columns={4} title="Inbox is clear" detail="New contact requests will appear here for review." />}</tbody></table></div></section>
+  </>;
+  return <>
+    <PageTitle eyebrow="CUSTOMER SUPPORT" title="Contact us" subtitle="Send a message to your PortFlow organization administrator." actions={<span className="readonly-pill"><ShieldCheck size={14} /> Private organization inbox</span>} />
+    <div className="contact-form-layout"><section className="panel contact-form-panel"><div className="panel-heading"><div><span className="eyebrow">SEND A MESSAGE</span><h2>How can we help?</h2></div><span className="panel-kicker">{organizationSlug}</span></div><form className="form-stack workspace-contact-form" onSubmit={submit}>
+      <Field label="Your name" name="contact_name" required minLength={2} maxLength={180} autoComplete="name" />
+      <Field label="Email address" name="email" type="email" required autoComplete="email" />
+      <Field label="Subject" name="subject" required minLength={2} maxLength={180} />
+      <div className="field"><label htmlFor="workspace-contact-message">Message</label><textarea id="workspace-contact-message" name="message" rows={6} required minLength={5} maxLength={2000} placeholder="Write your message" /></div>
+      <button className="primary-button"><Mail size={15} /> Send message</button>
+    </form></section><aside className="panel contact-info-panel"><div className="security-icon"><Mail size={19} /></div><span className="eyebrow">IN-APP REQUEST</span><h2>Admin can review it here</h2><p>Your message is saved inside this organization’s PortFlow inbox. No message is emailed automatically.</p></aside></div>
   </>;
 }
 

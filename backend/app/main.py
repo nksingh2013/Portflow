@@ -23,6 +23,7 @@ from app.models import (
     AuditLog,
     Container,
     ContainerVisit,
+    ContactInquiry,
     Customer,
     CustodyEvent,
     GateAppointment,
@@ -43,6 +44,8 @@ from app.models import (
 from app.schemas import (
     ContainerCreate,
     ContainerOut,
+    ContactInquiryCreate,
+    ContactInquiryOut,
     CustodyReceiveInput,
     CustodyReleaseInput,
     CustomerCreate,
@@ -51,6 +54,8 @@ from app.schemas import (
     CustomerPortalRequestCreate,
     CustomerPortalRequestOut,
     CustomerPortalUserCreate,
+    LiveContainerLocationOut,
+    PortCatalogOut,
     GateAppointmentCreate,
     GateAppointmentOut,
     InvoiceDetailOut,
@@ -91,6 +96,7 @@ from app.services import (
     utc_now,
     yard_suggestions,
 )
+from app.port_catalog import ASIAN_MAJOR_PORTS
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +207,12 @@ def health():
 @app.get("/api/v1/meta", response_model=PublicMeta, tags=["system"])
 def public_meta():
     return PublicMeta(demo_mode=settings.demo_mode, google_login_enabled=False)
+
+
+@app.get("/api/v1/ports/catalog", response_model=list[PortCatalogOut], tags=["ports"])
+def list_port_catalog():
+    """Return the curated Asian major commercial port directory."""
+    return ASIAN_MAJOR_PORTS
 
 
 @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED, tags=["identity"])
@@ -453,6 +465,35 @@ def request_customer_portal_access(payload: CustomerPortalRequestCreate, db: db_
     }
 
 
+@app.post("/api/v1/auth/contact-requests", status_code=201, tags=["contact"])
+def create_contact_request(payload: ContactInquiryCreate, db: db_dep):
+    """Store a public contact request for the requested organization."""
+    organization_slug = payload.organization_slug.strip().lower()
+    set_public_organization_slug(db, organization_slug)
+    organization_id = db.scalar(select(Organization.id).where(Organization.slug == organization_slug))
+    if organization_id is None:
+        raise HTTPException(status_code=404, detail="Organization not found. Check the organization slug with your terminal contact.")
+
+    set_tenant_context(db, organization_id)
+    inquiry = ContactInquiry(
+        organization_id=organization_id,
+        contact_name=payload.contact_name.strip(),
+        email=str(payload.email).strip().lower(),
+        subject=payload.subject.strip(),
+        message=payload.message.strip(),
+    )
+    db.add(inquiry)
+    db.flush()
+    db.add(AuditLog(
+        organization_id=organization_id,
+        action="contact.inquiry_submitted",
+        entity_type="contact_inquiry",
+        entity_id=str(inquiry.id),
+    ))
+    db.commit()
+    return {"status": "open", "request_id": str(inquiry.id), "message": "Your message was saved for the organization administrator."}
+
+
 @app.get("/api/v1/auth/providers", tags=["identity"])
 def auth_providers():
     return {"email_password": True, "google": {"enabled": False, "reason": "OAuth credentials are not configured"}, "mfa": {"admin_required": True, "method": "TOTP"}}
@@ -536,6 +577,126 @@ def create_terminal(payload: TerminalCreate, principal: Principal = Depends(requ
         raise HTTPException(status_code=409, detail="A terminal with that code already exists") from exc
 
 
+@app.post("/api/v1/terminals/import-asian-ports", tags=["organizations"])
+def import_asian_ports(
+    principal: Principal = Depends(require_roles("organization_admin")),
+    db: Session = Depends(get_db),
+):
+    """Add the curated Asian port directory as terminals, skipping existing entries."""
+    existing = list(db.scalars(select(Terminal).where(Terminal.organization_id == principal.organization_id)))
+    existing_codes = {terminal.code.casefold() for terminal in existing}
+    existing_names = {terminal.name.casefold() for terminal in existing}
+    created: list[str] = []
+    skipped = 0
+
+    for port in ASIAN_MAJOR_PORTS:
+        code = port["code"].upper()
+        name = port["name"]
+        if code.casefold() in existing_codes or name.casefold() in existing_names:
+            skipped += 1
+            continue
+        terminal = Terminal(
+            organization_id=principal.organization_id,
+            code=code,
+            name=name,
+            timezone=port["timezone"],
+            address=f"{port['city']}, {port['country']}",
+        )
+        try:
+            with db.begin_nested():
+                db.add(terminal)
+                db.flush()
+                audit(db, principal, "terminal.imported_from_asian_port_directory", "terminal", terminal.id, terminal.id)
+            created.append(name)
+            existing_codes.add(code.casefold())
+            existing_names.add(name.casefold())
+        except IntegrityError:
+            skipped += 1
+
+    db.commit()
+    return {"created_count": len(created), "skipped_count": skipped, "total_catalog_count": len(ASIAN_MAJOR_PORTS), "created": created}
+
+
+@app.get("/api/v1/locations/containers", response_model=list[LiveContainerLocationOut], tags=["locations"])
+def list_container_locations(
+    principal: principal_dep,
+    db: db_dep,
+    terminal_id: UUID | None = None,
+):
+    """Show latest recorded operational location per container, not GPS tracking."""
+    latest_visits = (
+        select(
+            ContainerVisit.id.label("visit_id"),
+            func.row_number().over(
+                partition_by=ContainerVisit.container_id,
+                order_by=(ContainerVisit.created_at.desc(), ContainerVisit.id.desc()),
+            ).label("visit_rank"),
+        )
+        .where(ContainerVisit.organization_id == principal.organization_id)
+        .subquery()
+    )
+    latest_movement_at = (
+        select(MovementEvent.moved_at)
+        .where(
+            MovementEvent.visit_id == ContainerVisit.id,
+            MovementEvent.organization_id == principal.organization_id,
+        )
+        .order_by(MovementEvent.moved_at.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    statement = (
+        select(ContainerVisit, Container, Customer, Terminal, YardSlot, latest_movement_at)
+        .join(latest_visits, latest_visits.c.visit_id == ContainerVisit.id)
+        .join(Container, Container.id == ContainerVisit.container_id)
+        .join(Customer, Customer.id == Container.customer_id)
+        .join(Terminal, Terminal.id == ContainerVisit.terminal_id)
+        .outerjoin(YardSlot, YardSlot.id == ContainerVisit.yard_slot_id)
+        .where(
+            ContainerVisit.organization_id == principal.organization_id,
+            latest_visits.c.visit_rank == 1,
+        )
+    )
+    statement = _active_terminal_filter(statement, principal, terminal_id)
+    if principal.role == "customer" or principal.membership.customer_id:
+        statement = statement.where(Container.customer_id == principal.membership.customer_id)
+    rows = db.execute(statement.order_by(ContainerVisit.created_at.desc()).limit(500)).all()
+    locations: list[LiveContainerLocationOut] = []
+    for visit, container, customer, terminal, slot, movement_at in rows:
+        recorded_times = [visit.created_at, visit.custody_received_at, visit.custody_released_at, movement_at]
+        last_updated = max(
+            (value for value in recorded_times if value is not None),
+            key=lambda value: value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC),
+            default=visit.created_at,
+        )
+        if last_updated.tzinfo is None:
+            last_updated = last_updated.replace(tzinfo=UTC)
+        else:
+            last_updated = last_updated.astimezone(UTC)
+        if visit.status == "released":
+            current_location = f"Exited · {terminal.name}"
+        elif slot is not None:
+            current_location = f"Yard · {slot.code}"
+        elif visit.status == "expected":
+            current_location = f"Gate · {terminal.name}"
+        else:
+            current_location = f"Terminal yard · {terminal.name}"
+        locations.append(LiveContainerLocationOut(
+            visit_id=visit.id,
+            container_number=container.container_number,
+            customer_name=customer.name,
+            terminal_id=terminal.id,
+            port_name=terminal.name,
+            port_address=terminal.address,
+            timezone=terminal.timezone,
+            yard_slot=slot.code if slot else None,
+            status=visit.status,
+            current_location=current_location,
+            last_updated_at=last_updated,
+        ))
+    return locations
+
+
 @app.get("/api/v1/customers", response_model=list[CustomerOut], tags=["customers"])
 def list_customers(principal: principal_dep, db: db_dep, terminal_id: UUID | None = None):
     statement = select(Customer).where(Customer.organization_id == principal.organization_id)
@@ -587,6 +748,45 @@ def list_customer_portal_requests(
             .limit(100)
         )
     )
+
+
+@app.get("/api/v1/contact-requests", response_model=list[ContactInquiryOut], tags=["contact"])
+def list_contact_requests(
+    principal: Principal = Depends(require_roles("organization_admin")),
+    db: Session = Depends(get_db),
+):
+    return list(db.scalars(
+        select(ContactInquiry)
+        .where(
+            ContactInquiry.organization_id == principal.organization_id,
+            ContactInquiry.status == "open",
+        )
+        .order_by(ContactInquiry.created_at.desc())
+        .limit(200)
+    ))
+
+
+@app.post("/api/v1/contact-requests/{inquiry_id}/resolve", response_model=ContactInquiryOut, tags=["contact"])
+def resolve_contact_request(
+    inquiry_id: UUID,
+    principal: Principal = Depends(require_roles("organization_admin")),
+    db: Session = Depends(get_db),
+):
+    inquiry = db.scalar(select(ContactInquiry).where(
+        ContactInquiry.id == inquiry_id,
+        ContactInquiry.organization_id == principal.organization_id,
+    ))
+    if inquiry is None:
+        raise HTTPException(status_code=404, detail="Contact request not found")
+    if inquiry.status != "resolved":
+        inquiry.status = "resolved"
+        inquiry.reviewed_by_id = principal.user.id
+        inquiry.reviewed_at = utc_now()
+        audit(db, principal, "contact.inquiry_resolved", "contact_inquiry", inquiry.id)
+        db.flush()
+        db.refresh(inquiry)
+        db.commit()
+    return inquiry
 
 
 @app.post("/api/v1/portal-access-requests/{request_id}/approve", tags=["customer portal"])

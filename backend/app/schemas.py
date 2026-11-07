@@ -110,6 +110,47 @@ class CustomerPortalRequestOut(ORMModel):
     created_at: datetime
 
 
+class ContactInquiryCreate(BaseModel):
+    organization_slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,78}[a-z0-9]$", max_length=80)
+    contact_name: str = Field(min_length=2, max_length=180)
+    email: EmailStr
+    subject: str = Field(min_length=2, max_length=180)
+    message: str = Field(min_length=5, max_length=2000)
+
+
+class ContactInquiryOut(ORMModel):
+    id: UUID
+    contact_name: str
+    email: str
+    subject: str
+    message: str
+    status: str
+    created_at: datetime
+
+
+class PortCatalogOut(BaseModel):
+    code: str
+    name: str
+    city: str
+    country: str
+    region: str
+    timezone: str
+
+
+class LiveContainerLocationOut(BaseModel):
+    visit_id: UUID
+    container_number: str
+    customer_name: str
+    terminal_id: UUID
+    port_name: str
+    port_address: str
+    timezone: str
+    yard_slot: str | None
+    status: str
+    current_location: str
+    last_updated_at: datetime
+
+
 class CustomerPortalGrant(BaseModel):
     customer_id: UUID
     password: str = Field(min_length=12, max_length=128)

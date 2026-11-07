@@ -48,6 +48,39 @@ export type CustomerPortalAccessRequest = {
   created_at: string;
 };
 
+export type ContactInquiry = {
+  id: string;
+  contact_name: string;
+  email: string;
+  subject: string;
+  message: string;
+  status: "open" | "resolved";
+  created_at: string;
+};
+
+export type PortCatalogEntry = {
+  code: string;
+  name: string;
+  city: string;
+  country: string;
+  region: string;
+  timezone: string;
+};
+
+export type LiveContainerLocation = {
+  visit_id: string;
+  container_number: string;
+  customer_name: string;
+  terminal_id: string;
+  port_name: string;
+  port_address: string;
+  timezone: string;
+  yard_slot: string | null;
+  status: string;
+  current_location: string;
+  last_updated_at: string;
+};
+
 export type Container = {
   id: string;
   terminal_id: string;
@@ -255,6 +288,25 @@ export async function requestCustomerAccess(payload: {
   if (!response.ok) {
     const result = await response.json().catch(() => null);
     throw new Error(result?.detail ?? `Access request failed (${response.status})`);
+  }
+  return (await response.json()) as { status: string; request_id: string; message: string };
+}
+
+export async function requestContact(payload: {
+  organization_slug: string;
+  contact_name: string;
+  email: string;
+  subject: string;
+  message: string;
+}) {
+  const response = await fetch("/api/v1/auth/contact-requests", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => null);
+    throw new Error(result?.detail ?? `Contact request failed (${response.status})`);
   }
   return (await response.json()) as { status: string; request_id: string; message: string };
 }

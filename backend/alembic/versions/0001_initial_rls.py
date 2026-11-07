@@ -40,7 +40,10 @@ def upgrade() -> None:
     bind = op.get_bind()
     Base.metadata.create_all(
         bind=bind,
-        tables=[table for table in Base.metadata.sorted_tables if table.name != "customer_portal_requests"],
+        tables=[
+            table for table in Base.metadata.sorted_tables
+            if table.name not in {"customer_portal_requests", "contact_inquiries"}
+        ],
     )
     if bind.dialect.name != "postgresql":
         return
