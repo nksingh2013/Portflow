@@ -88,6 +88,7 @@ from app.services import (
     ensure_terminal,
     generate_storage_invoice,
     record_visit_usage,
+    storage_days,
     to_utc,
     utc_now,
     yard_suggestions,
@@ -1616,6 +1617,58 @@ def get_invoice(invoice_id: UUID, principal: principal_dep, db: db_dep):
     data = InvoiceOut.model_validate(invoice).model_dump()
     data["lines"] = [InvoiceLineOut.model_validate(line) for line in lines]
     return InvoiceDetailOut.model_validate(data)
+
+
+@app.get("/api/v1/invoices/preview/{visit_id}", tags=["billing"])
+def preview_invoice_for_visit(visit_id: UUID, principal: Principal = Depends(require_roles("organization_admin", "terminal_manager", "port_staff")), db: Session = Depends(get_db)):
+    """Return a non-mutating storage invoice estimate for a released visit."""
+    visit = _load_visit(db, principal, visit_id)
+    if visit.status != "released":
+        raise HTTPException(status_code=409, detail="Operational storage invoice is created after custody release")
+    container = db.get(Container, visit.container_id)
+    customer = db.get(Customer, container.customer_id)
+    terminal = ensure_terminal(db, principal, visit.terminal_id)
+    if not visit.custody_received_at or not visit.custody_released_at:
+        raise HTTPException(status_code=409, detail="Custody receipt and release timestamps are required")
+    received_at = to_utc(visit.custody_received_at)
+    released_at = to_utc(visit.custody_released_at)
+    tariff_row = db.execute(
+        select(TariffVersion, Tariff.name)
+        .join(Tariff, Tariff.id == TariffVersion.tariff_id)
+        .where(
+            TariffVersion.organization_id == principal.organization_id,
+            TariffVersion.terminal_id == terminal.id,
+            Tariff.is_active.is_(True),
+            TariffVersion.published_at.is_not(None),
+            TariffVersion.effective_from <= received_at,
+            (TariffVersion.effective_to.is_(None) | (TariffVersion.effective_to >= received_at)),
+        )
+        .order_by(TariffVersion.effective_from.desc(), TariffVersion.version_number.desc())
+    ).first()
+    if tariff_row is None:
+        raise HTTPException(status_code=409, detail="No published tariff applied at custody receipt")
+    tariff_version, tariff_name = tariff_row
+    total_days = storage_days(received_at, released_at, terminal.timezone)
+    billable_days = max(0, total_days - tariff_version.free_storage_days)
+    rate = Decimal(tariff_version.daily_rate).quantize(Decimal("0.01"))
+    amount = (rate * billable_days).quantize(Decimal("0.01"))
+    return {
+        "visit_reference": visit.visit_reference,
+        "container_number": container.container_number,
+        "customer_name": customer.name,
+        "tariff_name": tariff_name,
+        "tariff_version": tariff_version.version_number,
+        "currency": "INR",
+        "total_calendar_days": total_days,
+        "free_storage_days": tariff_version.free_storage_days,
+        "billable_days": billable_days,
+        "daily_rate": str(rate),
+        "subtotal": str(amount),
+        "tax_total": "0.00",
+        "total": str(amount),
+        "tax_note": "Tax is not configured in this MVP.",
+        "zero_amount_reason": "All calendar days fall within the tariff's free storage period." if amount == 0 else None,
+    }
 
 
 @app.post("/api/v1/invoices/generate/{visit_id}", tags=["billing"])
