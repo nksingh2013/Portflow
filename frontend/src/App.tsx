@@ -530,7 +530,31 @@ function App() {
           {selectedScreen === "gate" && !customerMode && <GateView appointments={appointments} rows={filteredVisits} customers={customers} onWalkIn={() => openModal("walkin")} onAppointment={() => openModal("appointment")} onReceive={(visit) => { setSelectedVisit(visit); openModal("receive"); }} onRelease={(visit) => { setSelectedVisit(visit); openModal("release"); }} onAllocate={openAllocation} />}
           {selectedScreen === "yard" && !customerMode && <YardView slots={slots} visits={filteredVisits} canManage={session.role === "organization_admin" || session.role === "terminal_manager"} onAddSlot={() => openModal("yard-slot")} onAllocate={openAllocation} />}
           {selectedScreen === "vessels" && !customerMode && <VesselsView vessels={vessels} visits={visitRows} onAdd={() => openModal("vessel")} />}
-          {selectedScreen === "billing" && (customerMode ? <CustomerBilling invoices={portalInvoices} /> : <BillingView tariffs={tariffs} invoices={invoices} visits={visits} onNewTariff={() => openModal("tariff")} onPublish={(id) => void runAction(() => post(`/tariffs/versions/${id}/publish`, {}), "Tariff version published and locked.")} onGenerate={(id) => void runAction(() => post(`/invoices/generate/${id}`, {}), "Operational invoice generated.")} />)}
+          {selectedScreen === "billing" && (customerMode ? <CustomerBilling invoices={portalInvoices} /> : <BillingView tariffs={tariffs} invoices={invoices} visits={visits} onNewTariff={() => openModal("tariff")} onPublish={(id) => void runAction(() => post(`/tariffs/versions/${id}/publish`, {}), "Tariff version published and locked.")} onGenerate={(id) => void (async () => {
+            try {
+              const preview = await get<{ visit_reference: string; container_number: string; tariff_name: string; tariff_version: number; total_calendar_days: number; free_storage_days: number; billable_days: number; daily_rate: string; subtotal: string; tax_total: string; total: string; tax_note: string; zero_amount_reason: string | null }>(`/invoices/preview/${id}`);
+              const details = [
+                `Visit: ${preview.visit_reference}`,
+                `Container: ${preview.container_number}`,
+                `Tariff: ${preview.tariff_name} (v${preview.tariff_version})`,
+                `Calendar days: ${preview.total_calendar_days}`,
+                `Free days: ${preview.free_storage_days}`,
+                `Billable days: ${preview.billable_days}`,
+                `Daily rate: ${money(preview.daily_rate)}`,
+                `Subtotal: ${money(preview.subtotal)}`,
+                `Tax: ${money(preview.tax_total)} (not configured)`,
+                `Total: ${money(preview.total)}`,
+                preview.zero_amount_reason ? `Reason: ${preview.zero_amount_reason}` : "",
+                "",
+                "Generate and issue this invoice now?"
+              ].filter(Boolean).join("\\n");
+              if (window.confirm(details)) {
+                await runAction(() => post(`/invoices/generate/${id}`, {}), "Operational invoice generated.");
+              }
+            } catch (error) {
+              setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not preview this invoice." });
+            }
+          })()} />)}
           {selectedScreen === "customers" && !customerMode && <CustomersView customers={customers} visitRows={visitRows} portalRequests={session.role === "organization_admin" ? portalRequests : []} canManagePortal={session.role === "organization_admin"} onAdd={() => openModal("customer")} onApproveRequest={(request) => { setSelectedPortalRequest(request); openModal("portal-request"); }} onRejectRequest={(requestId) => void runAction(() => post(`/portal-access-requests/${requestId}/reject`, {}), "Customer access request declined.")} onCreatePortalLogin={(customer) => { setSelectedCustomer(customer); openModal("customer-login"); }} />}
           {selectedScreen === "portal" && customerMode && <PortalView rows={portalContainers} invoices={portalInvoices} />}
           {selectedScreen === "locations" && <LocationsView catalog={portCatalog} rows={liveLocations} />}
