@@ -894,6 +894,20 @@ function InvoiceDetailModal({ invoice, onClose }: { invoice: InvoiceDetail; onCl
   const containerNumber = value("container_number");
   const tariffName = value("tariff_name");
   const tariffVersion = value("tariff_version_number");
+  const terminalTimezone = value("timezone");
+  const snapshotDateTime = (key: string) => {
+    const raw = value(key);
+    if (raw === "—") return raw;
+    try {
+      return new Intl.DateTimeFormat("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: terminalTimezone === "—" ? undefined : terminalTimezone,
+      }).format(new Date(raw));
+    } catch {
+      return dateTime(raw);
+    }
+  };
   const linkedVisit = invoice.visit_ids?.[0] ?? invoice.lines?.[0]?.visit_id;
   return <ModalFrame title={`Invoice · ${invoice.invoice_number}`} onClose={onClose}>
     <div className="modal-form">
@@ -908,8 +922,8 @@ function InvoiceDetailModal({ invoice, onClose }: { invoice: InvoiceDetail; onCl
           <div className="terminal-row"><div><strong>Visit reference</strong><span>{visitReference}</span></div></div>
           <div className="terminal-row"><div><strong>Container</strong><span>{containerNumber}</span></div></div>
           <div className="terminal-row"><div><strong>Tariff</strong><span>{tariffName}{tariffVersion !== "—" ? ` · Version ${tariffVersion}` : ""}</span></div></div>
-          <div className="terminal-row"><div><strong>Custody received</strong><span>{dateTime(value("custody_received_at"))}</span></div></div>
-          <div className="terminal-row"><div><strong>Custody released</strong><span>{dateTime(value("custody_released_at"))}</span></div></div>
+          <div className="terminal-row"><div><strong>Custody received</strong><span>{snapshotDateTime("custody_received_at")}</span></div></div>
+          <div className="terminal-row"><div><strong>Custody released</strong><span>{snapshotDateTime("custody_released_at")}</span></div></div>
           <div className="terminal-row"><div><strong>Terminal timezone</strong><span>{value("timezone")}</span></div></div>
           <div className="terminal-row"><div><strong>Calendar days</strong><span>{value("calendar_days")}</span></div></div>
           <div className="terminal-row"><div><strong>Free storage days</strong><span>{value("free_storage_days")}</span></div></div>
