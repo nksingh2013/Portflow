@@ -38,6 +38,7 @@ import {
   type ContactInquiry,
   type DashboardSummary,
   type Invoice,
+  type InvoiceDetail,
   type LiveContainerLocation,
   type PortCatalogEntry,
   type Session,
