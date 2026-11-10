@@ -893,8 +893,11 @@ function InvoiceDetailModal({ invoice, tariffs, onClose }: { invoice: InvoiceDet
   const visitReference = value("visit_reference");
   const containerNumber = value("container_number");
   const tariffId = value("tariff_id");
-  const tariffName = value("tariff_name") !== "—" ? value("tariff_name") : tariffs.find((tariff) => tariff.id === tariffId)?.name ?? "—";
   const tariffVersion = value("tariff_version_number");
+  const tariffVersionId = value("tariff_version_id");
+  const tariffForSnapshot = tariffs.find((tariff) => tariff.id === tariffVersionId)
+    ?? tariffs.find((tariff) => tariff.tariff_id === tariffId && String(tariff.version_number) === tariffVersion);
+  const tariffName = value("tariff_name") !== "—" ? value("tariff_name") : tariffForSnapshot?.name ?? "—";
   const terminalTimezone = value("timezone");
   const snapshotDateTime = (key: string) => {
     const raw = value(key);
