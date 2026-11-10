@@ -130,6 +130,8 @@ function App() {
   const [slots, setSlots] = useState<YardSlot[]>([]);
   const [tariffs, setTariffs] = useState<Tariff[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [selectedInvoice, setSelectedInvoice] = useState<InvoiceDetail | null>(null);
+  const [invoiceDetailLoading, setInvoiceDetailLoading] = useState(false);
   const [portalContainers, setPortalContainers] = useState<Record<string, unknown>[]>([]);
   const [portalInvoices, setPortalInvoices] = useState<Invoice[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -441,6 +443,19 @@ function App() {
     }
   };
 
+  const openInvoiceDetails = async (invoiceId: string) => {
+    setInvoiceDetailLoading(true);
+    setSelectedInvoice(null);
+    try {
+      const detail = await get<InvoiceDetail>(`/invoices/${invoiceId}`);
+      setSelectedInvoice(detail);
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not load invoice details." });
+    } finally {
+      setInvoiceDetailLoading(false);
+    }
+  };
+
   const activeTerminal = terminals.find((terminal) => terminal.id === terminalId);
   const customerMap = useMemo(() => new Map(customers.map((customer) => [customer.id, customer])), [customers]);
   const containerMap = useMemo(() => new Map(containers.map((container) => [container.id, container])), [containers]);
@@ -531,7 +546,7 @@ function App() {
           {selectedScreen === "gate" && !customerMode && <GateView appointments={appointments} rows={filteredVisits} customers={customers} onWalkIn={() => openModal("walkin")} onAppointment={() => openModal("appointment")} onReceive={(visit) => { setSelectedVisit(visit); openModal("receive"); }} onRelease={(visit) => { setSelectedVisit(visit); openModal("release"); }} onAllocate={openAllocation} />}
           {selectedScreen === "yard" && !customerMode && <YardView slots={slots} visits={filteredVisits} canManage={session.role === "organization_admin" || session.role === "terminal_manager"} onAddSlot={() => openModal("yard-slot")} onAllocate={openAllocation} />}
           {selectedScreen === "vessels" && !customerMode && <VesselsView vessels={vessels} visits={visitRows} onAdd={() => openModal("vessel")} />}
-          {selectedScreen === "billing" && (customerMode ? <CustomerBilling invoices={portalInvoices} /> : <BillingView tariffs={tariffs} invoices={invoices} visits={visits} onNewTariff={() => openModal("tariff")} onPublish={(id) => void runAction(() => post(`/tariffs/versions/${id}/publish`, {}), "Tariff version published and locked.")} onGenerate={(id) => void (async () => {
+          {selectedScreen === "billing" && (customerMode ? <CustomerBilling invoices={portalInvoices} /> : <BillingView tariffs={tariffs} invoices={invoices} visits={visits} onNewTariff={() => openModal("tariff")} onViewInvoice={(id) => void openInvoiceDetails(id)} onPublish={(id) => void runAction(() => post(`/tariffs/versions/${id}/publish`, {}), "Tariff version published and locked.")} onGenerate={(id) => void (async () => {
             try {
               const preview = await get<{ visit_reference: string; container_number: string; tariff_name: string; tariff_version: number; total_calendar_days: number; free_storage_days: number; billable_days: number; daily_rate: string; subtotal: string; tax_total: string; total: string; tax_note: string; zero_amount_reason: string | null }>(`/invoices/preview/${id}`);
               const details = [
@@ -574,6 +589,8 @@ function App() {
         </div>
       </main>
 
+      {invoiceDetailLoading && <div className="modal-backdrop"><section className="modal-card"><div className="modal-head"><h2>Loading invoice details…</h2></div><p className="form-hint">Fetching the saved invoice snapshot and linked visit lines.</p></section></div>}
+      {selectedInvoice && <InvoiceDetailModal invoice={selectedInvoice} onClose={() => setSelectedInvoice(null)} />}
       {modal && <WorkspaceModal
         type={modal}
         busy={busy}
@@ -767,7 +784,7 @@ function OverviewView({ summary, rows, vessels, slots, onWalkIn, onAppointment, 
   </>;
 }
 
-function MetricCard({ label, value, detail, icon: Icon, accent, onClick }: { label: string; value?: number; detail: string; icon: LucideIcon; accent: string; onClick?: () => void }) {
+function MetricCard({ label, value, detail, icon: Icon, accent, onClick }: { label: string; value?: number | string; detail: string; icon: LucideIcon; accent: string; onClick?: () => void }) {
   const content = <><div className="metric-top"><span>{label}</span><span className="metric-icon"><Icon size={17} /></span></div><strong className="metric-value">{value ?? "—"}</strong><span className="metric-detail">{detail}</span>{onClick && <span className="metric-arrow"><ArrowUpRight size={15} /></span>}</>;
   return onClick ? <button className={`metric-card metric-${accent}`} onClick={onClick}>{content}</button> : <div className={`metric-card metric-${accent}`}>{content}</div>;
 }
@@ -819,7 +836,7 @@ function VesselsView({ vessels, visits, onAdd }: { vessels: VesselCall[]; visits
   </>;
 }
 
-function BillingView({ tariffs, invoices, visits, onNewTariff, onPublish, onGenerate }: { tariffs: Tariff[]; invoices: Invoice[]; visits: Visit[]; onNewTariff: () => void; onPublish: (id: string) => void; onGenerate: (id: string) => void }) {
+function BillingView({ tariffs, invoices, visits, onNewTariff, onPublish, onGenerate, onViewInvoice }: { tariffs: Tariff[]; invoices: Invoice[]; visits: Visit[]; onNewTariff: () => void; onPublish: (id: string) => void; onGenerate: (id: string) => void; onViewInvoice: (id: string) => void }) {
   const invoicedVisits = new Set(invoices.flatMap((invoice) => invoice.visit_ids ?? []));
   const releasable = visits.filter((visit) => visit.status === "released" && !invoicedVisits.has(visit.id));
   const billingCandidates = releasable.map((visit) => {
@@ -841,7 +858,7 @@ function BillingView({ tariffs, invoices, visits, onNewTariff, onPublish, onGene
     <PageTitle eyebrow="MANAGEMENT / FINANCE" title="Operational billing" subtitle="Published tariff versions feed immutable, INR-denominated operational invoice snapshots." actions={<button className="primary-button" onClick={onNewTariff}><Plus size={16} /> New tariff version</button>} />
     <div className="metric-grid metric-grid-three"><MetricCard label="Issued invoices" value={invoices.length} detail="Terminal operation invoices" icon={FileText} accent="blue" /><div className="metric-card metric-green"><div className="metric-top"><span>Issued total</span><span className="metric-icon"><CircleDollarSign size={17} /></span></div><strong className="metric-value money-value">{money(issuedTotal)}</strong><span className="metric-detail">From invoice records</span></div><MetricCard label="Published tariffs" value={tariffs.filter((tariff) => tariff.published_at).length} detail="Immutable published versions" icon={ShieldCheck} accent="teal" /></div>
     <section className="panel data-panel"><div className="panel-heading"><div><span className="eyebrow">TERMINAL RATES</span><h2>Tariff versions</h2></div><span className="panel-kicker">CALENDAR-DAY STORAGE</span></div><div className="table-wrap"><table><thead><tr><th>NAME / VERSION</th><th>FREE DAYS</th><th>DAILY RATE</th><th>EFFECTIVE FROM</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody>{tariffs.map((tariff) => <tr key={tariff.id}><td><div className="table-primary">{tariff.name}</div><span className="table-subtle">Version {tariff.version_number}</span></td><td>{tariff.free_storage_days} days</td><td>{money(tariff.daily_rate)}</td><td>{dateOnly(tariff.effective_from)}</td><td>{tariff.published_at ? <Badge tone="green">Published</Badge> : <Badge tone="amber">Draft</Badge>}</td><td>{tariff.published_at ? <span className="table-subtle">Locked</span> : <button className="text-button" onClick={() => onPublish(tariff.id)}>Publish</button>}</td></tr>)}{!tariffs.length && <EmptyTable columns={6} title="No tariffs configured" detail="Create a draft tariff, review the free period and publish the version." action={<button className="primary-button button-small" onClick={onNewTariff}><Plus size={14} /> Create tariff</button>} />}</tbody></table></div></section>
-    <section className="panel data-panel"><div className="panel-heading"><div><span className="eyebrow">CUSTOMER BILLING</span><h2>Operational invoices</h2></div><span className="panel-kicker">PORTFLOW SUBSCRIPTION INVOICES ARE SEPARATE</span></div><div className="table-wrap"><table><thead><tr><th>INVOICE</th><th>ISSUED</th><th>CHARGES</th><th>TAX</th><th>TOTAL</th><th>STATUS</th></tr></thead><tbody>{invoices.map((invoice) => <tr key={invoice.id}><td><div className="table-primary">{invoice.invoice_number}</div><span className="table-subtle">Terminal operations</span></td><td>{dateOnly(invoice.issued_at)}</td><td>{money(invoice.subtotal)}</td><td>{money(invoice.tax_total)}</td><td><strong>{money(invoice.total)}</strong></td><td><Badge tone={invoice.status === "paid" ? "green" : "amber"}>{invoice.status}</Badge></td></tr>)}{!invoices.length && <EmptyTable columns={6} title="No operational invoices" detail="Invoices are created from released visits using a published tariff." />}</tbody></table></div>{releasable.length > 0 && <div className="invoice-queue"><div><strong>{releasable.length} released visit{releasable.length === 1 ? "" : "s"} without an invoice</strong><span>{eligibleVisits.length} eligible for billing · {blockedVisits.length} blocked by tariff/date validation.</span></div>{eligibleVisits.slice(0, 4).map(({ visit, applicableTariff }) => <div key={visit.id}><button className="button-small secondary-button" onClick={() => onGenerate(visit.id)}>Generate {visit.visit_reference}</button><span className="table-subtle"> {applicableTariff?.name} · {money(applicableTariff?.daily_rate)}/day</span></div>)}{blockedVisits.slice(0, 4).map(({ visit }) => <div className="billing-note" key={visit.id}><ShieldCheck size={15} /><span><strong>{visit.visit_reference} — generation unavailable.</strong> No published tariff covers this visit's custody receipt date ({dateOnly(visit.custody_received_at)}). Verify the approved tariff history; no rate has been assumed.</span></div>)}</div>}</section>
+    <section className="panel data-panel"><div className="panel-heading"><div><span className="eyebrow">CUSTOMER BILLING</span><h2>Operational invoices</h2></div><span className="panel-kicker">PORTFLOW SUBSCRIPTION INVOICES ARE SEPARATE</span></div><div className="table-wrap"><table><thead><tr><th>INVOICE</th><th>ISSUED</th><th>CHARGES</th><th>TAX</th><th>TOTAL</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody>{invoices.map((invoice) => <tr key={invoice.id}><td><div className="table-primary">{invoice.invoice_number}</div><span className="table-subtle">Terminal operations</span></td><td>{dateOnly(invoice.issued_at)}</td><td>{money(invoice.subtotal)}</td><td>{money(invoice.tax_total)}</td><td><strong>{money(invoice.total)}</strong></td><td><Badge tone={invoice.status === "paid" ? "green" : "amber"}>{invoice.status}</Badge></td><td><button className="text-button" onClick={() => onViewInvoice(invoice.id)}>View details</button></td></tr>)}{!invoices.length && <EmptyTable columns={7} title="No operational invoices" detail="Invoices are created from released visits using a published tariff." />}</tbody></table></div>{releasable.length > 0 && <div className="invoice-queue"><div><strong>{releasable.length} released visit{releasable.length === 1 ? "" : "s"} without an invoice</strong><span>{eligibleVisits.length} eligible for billing · {blockedVisits.length} blocked by tariff/date validation.</span></div>{eligibleVisits.slice(0, 4).map(({ visit, applicableTariff }) => <div key={visit.id}><button className="button-small secondary-button" onClick={() => onGenerate(visit.id)}>Generate {visit.visit_reference}</button><span className="table-subtle"> {applicableTariff?.name} · {money(applicableTariff?.daily_rate)}/day</span></div>)}{blockedVisits.slice(0, 4).map(({ visit }) => <div className="billing-note" key={visit.id}><ShieldCheck size={15} /><span><strong>{visit.visit_reference} — generation unavailable.</strong> No published tariff covers this visit's custody receipt date ({dateOnly(visit.custody_received_at)}). Verify the approved tariff history; no rate has been assumed.</span></div>)}</div>}</section>
     <div className="billing-note"><ShieldCheck size={16} /><span>Invoice lines snapshot the tariff version and calendar-day calculation. Tax is not configured in this MVP. No PortFlow subscription payments are processed.</span></div>
   </>;
 }
