@@ -174,6 +174,18 @@ export type Invoice = {
   visit_ids: string[];
 };
 
+export type InvoiceDetail = Invoice & {
+  lines: Array<{
+    id: string;
+    visit_id: string;
+    charge_type: string;
+    description: string;
+    quantity: string;
+    unit_rate: string;
+    amount: string;
+  }>;
+};
+
 export type DashboardSummary = {
   scope: string;
   demo_data?: boolean;
