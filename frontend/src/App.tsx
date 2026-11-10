@@ -590,7 +590,7 @@ function App() {
       </main>
 
       {invoiceDetailLoading && <div className="modal-backdrop"><section className="modal-card"><div className="modal-head"><h2>Loading invoice details…</h2></div><p className="form-hint">Fetching the saved invoice snapshot and linked visit lines.</p></section></div>}
-      {selectedInvoice && <InvoiceDetailModal invoice={selectedInvoice} onClose={() => setSelectedInvoice(null)} />}
+      {selectedInvoice && <InvoiceDetailModal invoice={selectedInvoice} tariffs={tariffs} onClose={() => setSelectedInvoice(null)} />}
       {modal && <WorkspaceModal
         type={modal}
         busy={busy}
@@ -884,7 +884,7 @@ function PortalView({ rows, invoices }: { rows: Record<string, unknown>[]; invoi
   </>;
 }
 
-function InvoiceDetailModal({ invoice, onClose }: { invoice: InvoiceDetail; onClose: () => void }) {
+function InvoiceDetailModal({ invoice, tariffs, onClose }: { invoice: InvoiceDetail; tariffs: Tariff[]; onClose: () => void }) {
   const snapshot = invoice.snapshot ?? {};
   const value = (key: string) => {
     const item = snapshot[key];
@@ -892,7 +892,8 @@ function InvoiceDetailModal({ invoice, onClose }: { invoice: InvoiceDetail; onCl
   };
   const visitReference = value("visit_reference");
   const containerNumber = value("container_number");
-  const tariffName = value("tariff_name");
+  const tariffId = value("tariff_id");
+  const tariffName = value("tariff_name") !== "—" ? value("tariff_name") : tariffs.find((tariff) => tariff.id === tariffId)?.name ?? "—";
   const tariffVersion = value("tariff_version_number");
   const terminalTimezone = value("timezone");
   const snapshotDateTime = (key: string) => {

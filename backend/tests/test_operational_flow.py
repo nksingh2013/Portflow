@@ -65,6 +65,7 @@ def test_walk_in_idempotency_and_rail_release_create_snapshot_invoice(client, da
         invoice = session.scalar(select(OperationalInvoice).where(OperationalInvoice.id == UUID(payload["invoice"]["id"])))
         assert invoice.snapshot["calendar_days"] == 3
         assert invoice.snapshot["free_storage_days"] == 1
+        assert invoice.snapshot["tariff_name"] == "Standard storage"
         assert invoice.snapshot["billable_days"] == 2
         line = session.scalar(select(OperationalInvoiceLine).where(OperationalInvoiceLine.visit_id == visit.id))
         assert line.amount == 160

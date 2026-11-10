@@ -151,6 +151,7 @@ def generate_storage_invoice(
     )
     if tariff_version is None:
         return None, False
+    tariff_name = session.scalar(select(Tariff.name).where(Tariff.id == tariff_version.tariff_id)) or ""
 
     total_days = storage_days(received_at, released_at, terminal.timezone)
     billable_days = max(0, total_days - tariff_version.free_storage_days)
@@ -173,6 +174,7 @@ def generate_storage_invoice(
             "tariff_id": str(tariff_version.tariff_id),
             "tariff_version_id": str(tariff_version.id),
             "tariff_version_number": tariff_version.version_number,
+            "tariff_name": tariff_name,
             "timezone": terminal.timezone,
             "custody_received_at": received_at.isoformat(),
             "custody_released_at": released_at.isoformat(),
