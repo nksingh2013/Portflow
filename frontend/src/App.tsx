@@ -866,6 +866,50 @@ function PortalView({ rows, invoices }: { rows: Record<string, unknown>[]; invoi
   </>;
 }
 
+function InvoiceDetailModal({ invoice, onClose }: { invoice: InvoiceDetail; onClose: () => void }) {
+  const snapshot = invoice.snapshot ?? {};
+  const value = (key: string) => {
+    const item = snapshot[key];
+    return item === null || item === undefined || item === "" ? "—" : String(item);
+  };
+  const visitReference = value("visit_reference");
+  const containerNumber = value("container_number");
+  const tariffName = value("tariff_name");
+  const tariffVersion = value("tariff_version_number");
+  const linkedVisit = invoice.visit_ids?.[0] ?? invoice.lines?.[0]?.visit_id;
+  return <ModalFrame title={`Invoice · ${invoice.invoice_number}`} onClose={onClose}>
+    <div className="modal-form">
+      <div className="metric-grid metric-grid-three">
+        <MetricCard label="Subtotal" value={money(invoice.subtotal)} detail="Storage charges" icon={FileText} accent="blue" />
+        <MetricCard label="Tax" value={money(invoice.tax_total)} detail="Tax configuration" icon={ShieldCheck} accent="teal" />
+        <MetricCard label="Total" value={money(invoice.total)} detail={invoice.currency} icon={CircleDollarSign} accent="green" />
+      </div>
+      <div className="panel data-panel">
+        <div className="panel-heading"><div><span className="eyebrow">INVOICE SNAPSHOT</span><h2>Visit and tariff details</h2></div><Badge tone={invoice.status === "paid" ? "green" : "amber"}>{invoice.status}</Badge></div>
+        <div className="terminal-list">
+          <div className="terminal-row"><div><strong>Visit reference</strong><span>{visitReference}</span></div></div>
+          <div className="terminal-row"><div><strong>Container</strong><span>{containerNumber}</span></div></div>
+          <div className="terminal-row"><div><strong>Tariff</strong><span>{tariffName}{tariffVersion !== "—" ? ` · Version ${tariffVersion}` : ""}</span></div></div>
+          <div className="terminal-row"><div><strong>Custody received</strong><span>{dateTime(value("custody_received_at"))}</span></div></div>
+          <div className="terminal-row"><div><strong>Custody released</strong><span>{dateTime(value("custody_released_at"))}</span></div></div>
+          <div className="terminal-row"><div><strong>Terminal timezone</strong><span>{value("timezone")}</span></div></div>
+          <div className="terminal-row"><div><strong>Calendar days</strong><span>{value("calendar_days")}</span></div></div>
+          <div className="terminal-row"><div><strong>Free storage days</strong><span>{value("free_storage_days")}</span></div></div>
+          <div className="terminal-row"><div><strong>Billable days</strong><span>{value("billable_days")}</span></div></div>
+          <div className="terminal-row"><div><strong>Daily rate</strong><span>{money(value("daily_rate_inr"))}</span></div></div>
+        </div>
+      </div>
+      <div className="panel data-panel">
+        <div className="panel-heading"><div><span className="eyebrow">CHARGE BREAKDOWN</span><h2>Invoice lines</h2></div></div>
+        <div className="table-wrap"><table><thead><tr><th>DESCRIPTION</th><th>QTY</th><th>RATE</th><th>AMOUNT</th></tr></thead><tbody>{invoice.lines.map((line) => <tr key={line.id}><td><div className="table-primary">{line.description}</div><span className="table-subtle">{line.charge_type} · Visit {line.visit_id.slice(0, 8)}</span></td><td>{line.quantity}</td><td>{money(line.unit_rate)}</td><td><strong>{money(line.amount)}</strong></td></tr>)}{!invoice.lines.length && <EmptyTable columns={4} title="No invoice lines found" detail="This invoice has no linked charge lines. Check the saved invoice snapshot." />}</tbody></table></div>
+      </div>
+      {linkedVisit && <div className="billing-note"><ShieldCheck size={15} /><span>Linked visit ID: {linkedVisit}</span></div>}
+      {invoice.total === "0.00" && <div className="billing-note"><ShieldCheck size={15} /><span>{value("billable_days") === "0" ? "Zero amount is consistent with the saved snapshot: all calendar days were within the free storage allowance." : "This invoice is zero-valued. Compare the saved line amount and snapshot before treating it as correct."}</span></div>}
+      <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button></div>
+    </div>
+  </ModalFrame>;
+}
+
 function CustomerBilling({ invoices }: { invoices: Invoice[] }) {
   return <section className="panel data-panel customer-invoices"><div className="panel-heading"><div><span className="eyebrow">OPERATIONAL BILLING</span><h2>Issued invoices</h2></div><span className="panel-kicker">INR</span></div><div className="table-wrap"><table><thead><tr><th>INVOICE</th><th>ISSUED</th><th>SUBTOTAL</th><th>TAX</th><th>TOTAL</th></tr></thead><tbody>{invoices.map((invoice) => <tr key={invoice.id}><td><div className="table-primary">{invoice.invoice_number}</div></td><td>{dateOnly(invoice.issued_at)}</td><td>{money(invoice.subtotal)}</td><td>{money(invoice.tax_total)}</td><td><strong>{money(invoice.total)}</strong></td></tr>)}{!invoices.length && <EmptyTable columns={5} title="No invoices issued" detail="New operational invoices will appear here after custody release and tariff calculation." />}</tbody></table></div></section>;
 }
