@@ -1615,6 +1615,7 @@ def get_invoice(invoice_id: UUID, principal: principal_dep, db: db_dep):
     _authorized_customer(principal, invoice.customer_id)
     lines = list(db.scalars(select(OperationalInvoiceLine).where(OperationalInvoiceLine.invoice_id == invoice.id)))
     data = InvoiceOut.model_validate(invoice).model_dump()
+    data["visit_ids"] = [line.visit_id for line in lines]
     data["lines"] = [InvoiceLineOut.model_validate(line) for line in lines]
     return InvoiceDetailOut.model_validate(data)
 
