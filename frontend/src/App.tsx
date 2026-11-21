@@ -692,6 +692,13 @@ function AuthScreen({
               <div className="field"><label htmlFor="login-password">Password</label><div className="password-wrap"><input id="login-password" name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" required /><button type="button" className="show-password" onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Hide" : "Show"}</button></div></div>
               <button className="primary-button auth-submit" disabled={busy}>{busy ? <><span className="button-spinner" /> Signing in…</> : <>Continue <ArrowUpRight size={17} /></>}</button>
             </form>
+            <div style={{marginTop:16,padding:14,border:"1px solid #b8c9df",borderRadius:12,background:"rgba(59,130,246,0.07)"}}>
+              <div style={{fontSize:12,fontWeight:700,letterSpacing:"0.06em",marginBottom:8,color:"#2563eb"}}>DEMO ADMIN LOGIN · SAMPLE ACCOUNT</div>
+              <div style={{fontSize:13,marginBottom:5}}><strong>Email:</strong> portflow28@gmail.com</div>
+              <div style={{fontSize:13,marginBottom:10}}><strong>Password:</strong> portflow@2013</div>
+              <button type="button" className="secondary-button" style={{width:"100%"}} onClick={() => { const emailInput=document.querySelector<HTMLInputElement>('input[name="email"]'); const passwordInput=document.querySelector<HTMLInputElement>('input[name="password"]'); if(emailInput) emailInput.value="portflow28@gmail.com"; if(passwordInput) passwordInput.value="portflow@2013"; }}>Fill demo credentials</button>
+              <p style={{fontSize:11,lineHeight:1.45,margin:"9px 0 0",opacity:0.75}}>Demo credentials are publicly visible. Use only with a demo account and sample data.</p>
+            </div>
             {demoMode && <a className="secondary-button demo-preview-link" href="/?demo=1">Open the read-only sample workspace <ArrowUpRight size={15} /></a>}
             <button className="provider-button" disabled title="Google OAuth is not configured"><span className="google-mark">G</span> Continue with Google <span className="provider-note">Not configured</span></button>
             <p className="auth-switch">Customer access? <button onClick={() => onStageChange("customer-request")}>Request a login</button></p>
